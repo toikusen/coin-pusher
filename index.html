@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#040a12" />
+    <meta name="description" content="一款有任務、連擊與特殊硬幣的 3D 推幣機遊戲。" />
+    <title>Coin Pusher — 經典推幣</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@500;600;700&family=Noto+Sans+TC:wght@400;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <main class="shell" aria-labelledby="game-title">
+      <div class="ambient ambient--green" aria-hidden="true"></div>
+      <div class="ambient ambient--gold" aria-hidden="true"></div>
+
+      <section class="machine" aria-label="Coin Pusher 推幣機">
+        <div class="marquee" aria-hidden="true"></div>
+
+        <header class="hud">
+          <div class="brand">
+            <div class="brand__mark" aria-hidden="true">CP</div>
+            <div>
+              <h1 id="game-title">COIN PUSHER</h1>
+              <p>經典推幣 · ARCADE</p>
+            </div>
+          </div>
+
+          <div class="stats" aria-label="遊戲狀態">
+            <div class="stat stat--score">
+              <span>分數</span>
+              <strong id="score">0</strong>
+            </div>
+            <div class="stat">
+              <span>硬幣</span>
+              <strong id="credits">50</strong>
+            </div>
+          </div>
+        </header>
+
+        <div class="mission" id="mission" aria-label="目前任務">
+          <div class="mission__copy">
+            <span id="missionLabel">本局任務</span>
+            <strong id="missionValue">推落 0 / 25</strong>
+          </div>
+          <div class="mission__track" aria-hidden="true"><span id="missionBar"></span></div>
+          <span class="mission__best">最高 <strong id="bestScore">0</strong></span>
+        </div>
+
+        <div class="field" id="field">
+          <canvas
+            id="gameCanvas"
+            tabindex="0"
+            role="application"
+            aria-label="3D 推幣機遊戲區。左右方向鍵瞄準，空白鍵投幣，A 鍵切換自動投幣。"
+          ></canvas>
+
+          <div class="aim-readout" aria-hidden="true"><span id="aimValue">置中</span></div>
+
+          <div class="reward" id="reward" aria-hidden="true">
+            <strong id="rewardAmount">+1</strong>
+            <span id="rewardCombo">NICE DROP</span>
+          </div>
+
+          <div class="status-layer" id="loading" role="status" aria-live="polite">
+            <div class="spinner" aria-hidden="true"></div>
+            <strong>機台準備中</strong>
+            <span>正在排列硬幣與校準推板…</span>
+          </div>
+
+          <div class="status-layer status-layer--error" id="loadError" hidden>
+            <strong>機台暫時無法啟動</strong>
+            <span id="errorMessage">請檢查瀏覽器是否支援 WebGL。</span>
+            <button class="secondary-button" id="retryButton" type="button">重新載入</button>
+          </div>
+        </div>
+
+        <footer class="controls">
+          <p class="instructions" id="instructions">拖曳瞄準、輕觸場景投幣；鍵盤可用 ← → 與空白鍵</p>
+          <div class="control-row">
+            <button class="icon-button" id="soundButton" type="button" aria-label="關閉音效" aria-pressed="true">
+              <span aria-hidden="true">♪</span>
+            </button>
+            <button class="auto-button" id="autoButton" type="button" aria-pressed="false">
+              <span aria-hidden="true">↻</span><span>AUTO</span>
+            </button>
+            <button class="drop-button" id="dropButton" type="button">
+              <span class="drop-button__coin" aria-hidden="true"></span>
+              <span>投幣</span>
+              <kbd>SPACE</kbd>
+            </button>
+          </div>
+        </footer>
+      </section>
+
+      <aside class="session-actions" aria-label="遊戲選項">
+        <button id="helpButton" type="button">玩法說明</button>
+        <button id="resetButton" type="button">重新開始</button>
+      </aside>
+
+      <!-- Docked outside the cabinet so the sliders never cover the playfield. -->
+      <div class="tune-dock">
+        <button
+          class="tune-toggle"
+          id="tuneToggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="tunePanel"
+        >調整</button>
+
+        <section class="tune-panel" id="tunePanel" aria-label="機台調整" hidden>
+          <header class="tune-panel__header">
+            <div><span>TUNING</span><strong>機台調整</strong></div>
+            <button id="tuneClose" type="button" aria-label="關閉調整面板">×</button>
+          </header>
+
+          <!-- Scrolling lives here, not on .tune-panel: that element carries the bevel, whose
+               fill is an absolutely positioned ::before layer. Inside a scroll container it is
+               only one viewport tall and scrolls away, leaving the rim colour behind it. -->
+          <div class="tune-panel__body">
+          <fieldset class="tune-group">
+            <legend>難度</legend>
+
+            <label class="tune-control" for="tuneThickness">
+              <span>硬幣厚度</span><output id="tuneThicknessValue" for="tuneThickness">0.10</output>
+            </label>
+            <input id="tuneThickness" type="range" min="0.06" max="0.34" step="0.01" value="0.1" />
+            <p class="tune-hint">主要旋鈕。調厚＝硬幣不易翻倒、推力傳得動＝變簡單。放手時會重排硬幣堆。</p>
+
+            <label class="tune-control" for="tuneGroundFriction">
+              <span>檯面摩擦</span><output id="tuneGroundFrictionValue" for="tuneGroundFriction">0.14</output>
+            </label>
+            <input id="tuneGroundFriction" type="range" min="0" max="1" step="0.01" value="0.14" />
+            <p class="tune-hint">微調。調高＝硬幣咬住檯面＝變難。</p>
+
+            <p class="tune-hint tune-hint--note">簡單 0.24 / 0.08　·　預設 0.10 / 0.14　·　難 0.08 / 0.45</p>
+          </fieldset>
+
+          <fieldset class="tune-group">
+            <legend>HDR 反射</legend>
+
+            <label class="tune-control" for="hdriHorizontal">
+              <span>水平旋轉</span><output id="hdriHorizontalValue" for="hdriHorizontal">0°</output>
+            </label>
+            <input id="hdriHorizontal" type="range" min="-180" max="180" step="1" value="0" />
+
+            <label class="tune-control" for="hdriVertical">
+              <span>垂直旋轉</span><output id="hdriVerticalValue" for="hdriVertical">0°</output>
+            </label>
+            <input id="hdriVertical" type="range" min="-90" max="90" step="1" value="0" />
+          </fieldset>
+
+          <div class="tune-actions">
+            <button class="tune-reset" id="tunePhysicsReset" type="button">重設物理</button>
+            <button class="tune-reset" id="hdriReset" type="button">重設角度</button>
+          </div>
+          </div>
+        </section>
+      </div>
+
+    </main>
+
+    <dialog class="onboarding" id="onboarding" aria-labelledby="onboardingTitle">
+      <div class="onboarding__art" aria-hidden="true"><span>★</span></div>
+      <p class="eyebrow">HOW TO PLAY</p>
+      <h2 id="onboardingTitle">瞄準、推落、連擊</h2>
+      <ol>
+        <li><strong>選位置</strong><span>拖曳場景或使用左右方向鍵瞄準。</span></li>
+        <li><strong>抓節奏</strong><span>趁推板後退時投幣，能堆出更有利的位置。</span></li>
+        <li><strong>追綠幣</strong><span>綠色星幣價值 3 分；連續掉落還有額外獎勵。</span></li>
+      </ol>
+      <button class="primary-button" id="startButton" type="button">開始挑戰</button>
+    </dialog>
+
+    <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
