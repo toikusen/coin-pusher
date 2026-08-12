@@ -115,7 +115,34 @@ function toggleAuto() {
   }, GAME.autoInterval * 1000);
 }
 
+// The game reports one frame's worth of coins per payout, and an avalanche spills over many
+// frames. Collect them for a moment so one avalanche reads as one payout: one sound, one
+// announcement, one save - instead of a burst of each in the same tenth of a second.
+const PAYOUT_BATCH_MS = 140;
+let payout = null;
+
 function handleScore(coins, elapsed) {
+  // Snapshot what the reward depends on: coin objects are pooled and reused, so holding the
+  // objects across the batch window would let a recycled coin change what it paid.
+  const dropped = coins.map((coin) => ({ isPremium: coin.isPremium }));
+  if (payout) {
+    payout.coins.push(...dropped);
+    payout.elapsed = elapsed;
+    return;
+  }
+  payout = { coins: dropped, elapsed, timer: window.setTimeout(flushPayout, PAYOUT_BATCH_MS) };
+}
+
+function clearPayout() {
+  if (!payout) return;
+  window.clearTimeout(payout.timer);
+  payout = null;
+}
+
+function flushPayout() {
+  if (!payout) return;
+  const { coins, elapsed } = payout;
+  payout = null;
   const result = calculateReward(coins, state.combo, elapsed - state.lastScoreAt);
   const premium = coins.some((coin) => coin.isPremium);
   state.combo = result.combo;
@@ -135,12 +162,19 @@ function handleScore(coins, elapsed) {
     ui.missionComplete();
     audio.jackpot();
   }
-  persist();
+  // Only the best score can change here, and localStorage writes are synchronous - during a
+  // payout run this is the one thing in the frame that touches disk.
+  if (state.bestScore > progress.bestScore) {
+    progress.bestScore = state.bestScore;
+    persist();
+  }
   renderState();
 }
 
 function resetSession() {
   stopAuto();
+  // A payout still in the batch window belongs to the session being thrown away.
+  clearPayout();
   state.score = 0;
   state.credits = GAME.startingCredits;
   state.combo = 0;

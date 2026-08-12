@@ -40,6 +40,31 @@ describe('calculateReward', () => {
       total: 2 + GAME.comboBonus,
     });
   });
+
+  it('pays the bonus once per chain, not on every payout above the threshold', () => {
+    const next = calculateReward([{ isPremium: false }], GAME.comboThreshold, 0.5);
+    expect(next).toMatchObject({ combo: GAME.comboThreshold + 1, bonus: 0, total: 1 });
+  });
+
+  // A payout is one frame's worth of coins, so an avalanche is delivered over several calls.
+  // Splitting it must not change what it is worth, or the score tracks the frame rate.
+  it('scores an avalanche the same whether it lands in one frame or many', () => {
+    const coins = Array.from({ length: 12 }, () => ({ isPremium: false }));
+    const single = calculateReward(coins, 0, Infinity);
+
+    let combo = 0;
+    let total = 0;
+    let elapsed = Infinity;
+    for (const size of [3, 4, 3, 2]) {
+      const result = calculateReward(coins.slice(0, size), combo, elapsed);
+      combo = result.combo;
+      total += result.total;
+      elapsed = 0.02;
+    }
+
+    expect(combo).toBe(single.combo);
+    expect(total).toBe(single.total);
+  });
 });
 
 describe('aim helpers', () => {

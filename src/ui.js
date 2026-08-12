@@ -92,7 +92,13 @@ export class GameUI {
   reward({ total, combo, premium, bonus }) {
     clearTimeout(this.rewardTimer);
     this.el.rewardAmount.textContent = `+${total}`;
-    this.el.rewardCombo.textContent = bonus > 0 ? `COMBO ×${combo} · BONUS +${bonus}` : premium ? 'STAR COIN ×3' : 'NICE DROP';
+    // The bonus is paid once per chain, so it cannot carry the combo readout on its own: past
+    // the threshold the count still has to be visible on the payouts that earn no bonus.
+    this.el.rewardCombo.textContent = bonus > 0
+      ? `COMBO ×${combo} · BONUS +${bonus}`
+      : combo >= GAME.comboThreshold
+        ? `COMBO ×${combo}`
+        : premium ? 'STAR COIN ×3' : 'NICE DROP';
     this.el.reward.classList.remove('is-visible');
     void this.el.reward.offsetWidth;
     this.el.reward.classList.add('is-visible');

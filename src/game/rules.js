@@ -13,8 +13,15 @@ export function calculateReward(coins, previousCombo, elapsedSinceScore) {
     (sum, coin) => sum + (coin.isPremium ? GAME.premiumValue : GAME.regularValue),
     0,
   );
-  const combo = elapsedSinceScore < GAME.comboWindow ? previousCombo + coins.length : coins.length;
-  const bonus = combo >= GAME.comboThreshold ? GAME.comboBonus : 0;
+  const carried = elapsedSinceScore < GAME.comboWindow ? previousCombo : 0;
+  const combo = carried + coins.length;
+  // The bonus fires on the payout that crosses the threshold, not on every payout above it.
+  // A payout is one frame's worth of coins, and an avalanche arrives over several frames, so
+  // paying per call handed the same coins a bonus once per frame - the faster the display ran,
+  // the more the same drop was worth.
+  const bonus = carried < GAME.comboThreshold && combo >= GAME.comboThreshold
+    ? GAME.comboBonus
+    : 0;
   return { base, combo, bonus, total: base + bonus };
 }
 
