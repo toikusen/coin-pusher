@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { GAME } from '../src/game/config.js';
 import {
-  aimLabel,
+  CHARGE_SECONDS,
   calculateReward,
-  clampAim,
+  chargeToPower,
   coinPhase,
-  screenAimToWorld,
-  worldAimToScreen,
+  launchSpeedFor,
 } from '../src/game/rules.js';
 
 describe('coinPhase', () => {
@@ -67,22 +66,22 @@ describe('calculateReward', () => {
   });
 });
 
-describe('aim helpers', () => {
-  it('clamps the aim to the playable shelf', () => {
-    expect(clampAim(-9)).toBe(-1.95);
-    expect(clampAim(9)).toBe(1.95);
-    expect(clampAim(0.5)).toBe(0.5);
+// Hold-to-charge is the only control now, so the curve it produces is the whole input contract.
+describe('charge', () => {
+  it('reaches full power exactly at the hold time, and never past it', () => {
+    expect(chargeToPower(CHARGE_SECONDS)).toBe(1);
+    expect(chargeToPower(CHARGE_SECONDS * 4)).toBe(1);
   });
 
-  it('provides a concise accessible label', () => {
-    expect(aimLabel(-1)).toBe('偏左');
-    expect(aimLabel(0)).toBe('置中');
-    expect(aimLabel(1)).toBe('偏右');
+  // A tap has to be a usable weak launch, not a wasted coin, and holding forever must not be
+  // punished either - between them that is what makes the control forgiving.
+  it('treats a tap as the weakest launch rather than nothing', () => {
+    expect(chargeToPower(0)).toBe(0);
+    expect(chargeToPower(-1)).toBe(0);
+    expect(launchSpeedFor(chargeToPower(0))).toBeCloseTo(GAME.railSpeedMin, 8);
   });
 
-  it('maps screen-right to world negative X for the front-facing camera', () => {
-    expect(screenAimToWorld(1)).toBe(-1);
-    expect(screenAimToWorld(-1)).toBe(1);
-    expect(worldAimToScreen(-1)).toBe(1);
+  it('rises evenly across the hold', () => {
+    expect(chargeToPower(CHARGE_SECONDS / 2)).toBeCloseTo(0.5, 8);
   });
 });

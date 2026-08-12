@@ -207,21 +207,16 @@ canvas:focus-visible {
 .field { min-height: 0; position: relative; overflow: hidden; background: var(--ink-950); }
 .field canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
 
-.aim-readout {
+/* Diorama framing. In CSS rather than a foreground plane in the scene: the camera is fixed, so
+   there is no parallax to buy, and this costs no draw call. */
+.field::after {
+  content: "";
   position: absolute;
-  top: var(--space-3);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 0.3rem 0.75rem;
-  border: 0.0625rem solid var(--line-strong);
-  border-radius: 999px;
-  background: rgba(6, 13, 24, 0.72);
-  color: var(--teal-300);
-  font: 700 0.7rem/1.2 var(--font-tech);
-  letter-spacing: 0.12em;
+  inset: 0;
   pointer-events: none;
-  backdrop-filter: blur(0.4rem);
+  background: radial-gradient(ellipse 78% 68% at 50% 46%, transparent 55%, rgba(3, 7, 16, 0.72));
 }
+
 
 .reward {
   position: absolute;
@@ -365,7 +360,7 @@ canvas:focus-visible {
   background: linear-gradient(180deg, var(--surface), var(--ink-850));
 }
 .instructions { margin: 0 0 var(--space-2); color: var(--text-muted); font-size: 0.75rem; text-align: center; }
-.control-row { min-height: 3.7rem; display: grid; grid-template-columns: 3.25rem 3.7rem minmax(0, 1fr); gap: var(--space-2); }
+.control-row { min-height: 3.7rem; display: grid; grid-template-columns: 3.25rem 3.7rem repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
 
 .icon-button, .auto-button, .drop-button, .primary-button, .secondary-button, .session-actions button {
   min-width: 2.75rem;
@@ -404,8 +399,8 @@ canvas:focus-visible {
   border: 0;
   color: #032b28;
   filter: drop-shadow(0 0 1rem rgba(0, 200, 180, 0.5));
-  font: 700 1.05rem/1 var(--font-display);
-  letter-spacing: 0.08em;
+  font: 700 0.86rem/1 var(--font-display);
+  letter-spacing: 0.04em;
   text-shadow: 0 0 0.5rem rgba(255, 255, 255, 0.45);
 }
 .drop-button::after {
@@ -417,7 +412,24 @@ canvas:focus-visible {
   animation: button-sheen 4s ease-in-out infinite;
 }
 .drop-button > * { position: relative; z-index: 1; }
-.drop-button__coin { width: 1.25rem; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle at 35% 30%, var(--text-strong), var(--gold-400) 45%, #b98008); box-shadow: inset 0 0 0 0.125rem rgba(58, 40, 0, 0.22); }
+/* Charge bar. Driven by a CSS animation rather than a rAF loop in JS: the duration is the one
+   number that has to agree with rules.js, and main.js sets it from CHARGE_SECONDS at boot. */
+.drop-button__charge {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 0.3rem;
+  transform-origin: left center;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, var(--gold-400), var(--text-strong));
+  box-shadow: 0 0 0.6rem rgba(242, 201, 76, 0.8);
+}
+.drop-button.is-charging .drop-button__charge {
+  animation: charge-fill var(--charge-duration, 0.7s) linear forwards;
+}
+.drop-button.is-charging { filter: drop-shadow(0 0 1.4rem rgba(242, 201, 76, 0.75)); }
+@keyframes charge-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.drop-button__label { white-space: nowrap; }
 .drop-button kbd { padding: 0.2rem 0.4rem; border: 0.0625rem solid rgba(3, 43, 40, 0.3); border-radius: 0.25rem; background: rgba(3, 43, 40, 0.12); font: 700 0.62rem/1 var(--font-tech); letter-spacing: 0.14em; }
 
 .session-actions {

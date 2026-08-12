@@ -4,7 +4,10 @@ import { GAME } from './config.js';
 export const COIN_RADIUS = 0.36;
 export const COIN_HEIGHT = 0.1;
 export const COIN_MASS = 0.05;
-export const LOWER_SEED_COUNT = 52;
+// Fill most of the lower tier's safe slots while preserving a full receiving row in front of the
+// blade. The initial pile deliberately does not complete the blade-to-lip force chain: player
+// drops fill that last link, so an idle machine and the very first drop cannot pay out for free.
+export const LOWER_SEED_COUNT = 14;
 export const COIN_GROUND_FRICTION = 0.14;
 export const COIN_COIN_FRICTION = 0.3;
 export const COIN_PUSHER_FRICTION = 1;
@@ -12,6 +15,17 @@ export const COIN_LINEAR_DAMPING = 0.12;
 export const COIN_ANGULAR_DAMPING = 0.58;
 // More rim faces keep coin-to-coin normals from jumping as crowded coins rotate.
 const COIN_SEGMENTS = 20;
+
+// cannon-es creates one friction pair for every contact in a convex manifold and gives each pair
+// the full material friction budget. A flat 20-sided coin therefore receives roughly 20 copies of
+// the intended table friction. Its solver also clamps impulses per step, so the same material feels
+// twice as sticky at 120 Hz as at 60 Hz. frictionGravity is the supported force-scale override;
+// calibrating it by both the fixed step and the face contact count makes the public coefficients
+// behave like coefficients again and keeps low/high-power profiles consistent.
+export function syncFrictionGravity(world, fixedStep) {
+  world.frictionGravity ??= new CANNON.Vec3();
+  world.gravity.scale(fixedStep / COIN_SEGMENTS, world.frictionGravity);
+}
 
 // The knobs the tuning panel drives. All of them take effect on a running world: cannon-es
 // reads friction off the ContactMaterial during narrowphase and gravity off the world every
@@ -109,8 +123,19 @@ export function applyCoinTuning(body, tuning, resizeShape = false) {
 // therefore exceed the coin diameter by more than the jitter below can close.
 const COLUMN_PITCH = 0.78; // vs a 0.72 diameter, so 0.06 of slack per gap
 const ROW_PITCH = 0.80; // 0.08 of slack per gap
-const LOWER_ROW_PITCH = 0.75; // fit four rows on the shorter lower playfield
-const COLUMN_ORIGIN = -1.95; // centres 6 columns; the outermost coin still clears the side walls
+const LOWER_ROW_PITCH = 0.75; // keeps force chains close while fitting the full lower band
+// A seeded front coin keeps roughly half a diameter of table ahead of its rim. The old 0.04 gap
+// put the front row at the tipping point, so the first normal stroke paid it out before the player
+// had added enough coins to complete a force chain.
+const LOWER_FRONT_GAP = 0.38;
+// Ends of the band on the lower bed that is clear of both the front lip and the retreated blade.
+const LOWER_SAFE_FRONT = GAME.playfieldFrontZ + COIN_RADIUS + LOWER_FRONT_GAP;
+const LOWER_SAFE_BACK = GAME.pusherOriginZ - GAME.pusherDepth / 2 - COIN_RADIUS - 0.04;
+const LOWER_ROWS = Math.round((LOWER_SAFE_BACK - LOWER_SAFE_FRONT) / LOWER_ROW_PITCH) + 1;
+// Leave a two-row receiving band in front of the blade. One empty row was still within direct
+// blade reach, so every idle stroke compressed the seeded rows and eventually paid them out.
+// Player drops now have to build the missing rear links before the blade can reach the front pile.
+const LOWER_SEED_ROWS = Math.max(1, LOWER_ROWS - 2);
 const LAYER_OFFSET = 0.03; // whole-layer nudge, cannot close a gap within a layer
 // Whole-row nudge. Free in X: two coins of different rows are already a row pitch apart in Z,
 // which beats the diameter on its own, so only the side walls bound this.
@@ -119,7 +144,20 @@ const COIN_JITTER_X = 0.04; // per coin, so neighbours differ by at most 0.04 < 
 const COIN_JITTER_Z = 0.06; // per coin, at most 0.06 < 0.08 of slack
 const LOWER_COIN_JITTER_Z = 0.02; // preserve clearance at the tighter lower row pitch
 
-// A real pile is ragged - gaps down in the body of it, a thinning crown on top. Filling every
+// Widest a seeded coin centre may sit: inside the glass by a radius, less a margin. The lattice
+// is then cut to fit, so widening GAME.playfieldHalfWidth fills the extra room with real columns
+// instead of stretching the same few across it.
+const SEED_MAX_X = GAME.playfieldHalfWidth - COIN_RADIUS - 0.06;
+// The outermost column has to fit with its jitter already spent, not be clamped onto SEED_MAX_X.
+// Clamping looks harmless and is not: it stacks that column's coins onto one X while its
+// neighbour keeps its own, closing the gap below a diameter and seeding the pile overlapping.
+const SEED_JITTER_X = LAYER_OFFSET + ROW_JITTER / 2 + COIN_JITTER_X / 2;
+const SEED_COLUMNS = Math.floor(((SEED_MAX_X - SEED_JITTER_X) * 2) / COLUMN_PITCH) + 1;
+const COLUMN_ORIGIN = -((SEED_COLUMNS - 1) / 2) * COLUMN_PITCH;
+// How many coins one layer of the lower pile holds - the width knob's visible consequence.
+export const LOWER_SLOTS_PER_LAYER = SEED_COLUMNS * LOWER_SEED_ROWS;
+
+// The upper pile is ragged - gaps down in the body of it, a thinning crown on top. Filling every
 // lattice slot in order instead reads as brickwork. Slots are skipped by a seeded coin flip
 // that gets likelier with height, so the same coin budget spreads over more, sparser layers
 // and a coin seeded above a gap drops into it while the pile settles.
@@ -142,6 +180,15 @@ function occupiedSlot(index, seed, channel, perLayer) {
   return index; // out of slots: fall back to the dense lattice rather than stack forever
 }
 
+// Pick unique slots from one layer in a seed-dependent order. Ranking all 40 candidates is
+// cheap at reset time and, unlike vacancy-scanning, guarantees that an unlucky random seed can
+// never spill the lower bed into a second layer.
+function singleLayerSlot(index, seed, channel, perLayer) {
+  const slots = Array.from({ length: perLayer }, (_, slot) => slot);
+  slots.sort((a, b) => seededNoise(a, channel, seed) - seededNoise(b, channel, seed) || a - b);
+  return slots[index];
+}
+
 // Layer spacing has to follow the tunable thickness, or a thicker coin seeds the pile already
 // interpenetrating and cannon-es never resolves it. At the default 0.1 both expressions below
 // reduce to the constants they replaced (0.13 pitch, 0.07 resting centre).
@@ -162,13 +209,13 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
 
   if (index >= LOWER_SEED_COUNT) {
     const upperIndex = index - LOWER_SEED_COUNT;
-    const columns = 6;
+    const columns = SEED_COLUMNS;
     // Seed rows in tray-local Z: a coin resting on the tray rides with it, so what matters is
     // its offset from the tray centre, not its world position. Two limits bound the band that
     // stays undisturbed - past the front the coin overhangs the tray, past the back the
     // scraper catches it once per stroke and shoves it forward forever. Moving the scraper
-    // forward so the tray actually drains left only one row's worth of that band, so the rest
-    // of the seed budget goes to the lower pile instead (LOWER_SEED_COUNT).
+    // forward so the tray actually drains left only one row's worth of that band, so the upper
+    // seed is a small multi-layer buffer that feeds the deliberately sparse lower bed.
     const rows = 1;
     const perLayer = columns * rows;
     const slotIndex = occupiedSlot(upperIndex, seed, 23, perLayer);
@@ -187,8 +234,8 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
         COLUMN_ORIGIN + columnOf(slot, columns) * COLUMN_PITCH + layerNudge(layer)
           + centeredNoise(row + layer * rows, 3, seed) * ROW_JITTER
           + centeredNoise(index, 5, seed) * COIN_JITTER_X,
-        -2.04,
-        2.04,
+        -SEED_MAX_X,
+        SEED_MAX_X,
       ),
       y: trayTop + thickness / 2 + 0.02 + layer * layerPitch,
       z: clamp(
@@ -199,16 +246,12 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
     };
   }
 
-  const columns = 6;
-  const rows = 4;
+  const columns = SEED_COLUMNS;
+  const rows = LOWER_SEED_ROWS;
   const perLayer = columns * rows;
-  const slotIndex = occupiedSlot(index, seed, 19, perLayer);
-  const layer = Math.floor(slotIndex / perLayer);
-  const slot = slotIndex % perLayer;
+  const slot = singleLayerSlot(index, seed, 19, perLayer);
+  const layer = 0;
   const row = Math.floor(slot / columns);
-  const safeFront = GAME.playfieldFrontZ + COIN_RADIUS + 0.04;
-  const initialPusherFront = GAME.pusherOriginZ - GAME.pusherDepth / 2;
-  const safeBack = initialPusherFront - COIN_RADIUS - 0.04;
 
   return {
     tier: 'lower',
@@ -216,15 +259,15 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
       COLUMN_ORIGIN + columnOf(slot, columns) * COLUMN_PITCH + layerNudge(layer)
         + centeredNoise(row + layer * rows, 11, seed) * ROW_JITTER
         + centeredNoise(index, 13, seed) * COIN_JITTER_X,
-      -2.04,
-      2.04,
+      -SEED_MAX_X,
+      SEED_MAX_X,
     ),
     y: thickness / 2 + 0.02 + layer * layerPitch,
     z: clamp(
-      safeFront + row * LOWER_ROW_PITCH
+      LOWER_SAFE_FRONT + row * LOWER_ROW_PITCH
         + centeredNoise(index, 17, seed) * LOWER_COIN_JITTER_Z,
-      safeFront,
-      safeBack,
+      LOWER_SAFE_FRONT,
+      LOWER_SAFE_BACK,
     ),
   };
 }

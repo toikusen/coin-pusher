@@ -53,10 +53,8 @@
             id="gameCanvas"
             tabindex="0"
             role="application"
-            aria-label="3D 推幣機遊戲區。左右方向鍵瞄準，空白鍵投幣，A 鍵切換自動投幣。"
+            aria-label="3D 推幣機遊戲區。按住左右方向鍵蓄力投幣，放開發射，A 鍵切換自動投幣。"
           ></canvas>
-
-          <div class="aim-readout" aria-hidden="true"><span id="aimValue">置中</span></div>
 
           <div class="reward" id="reward" aria-hidden="true">
             <strong id="rewardAmount">+1</strong>
@@ -77,7 +75,7 @@
         </div>
 
         <footer class="controls">
-          <p class="instructions" id="instructions">拖曳瞄準、輕觸場景投幣；鍵盤可用 ← → 與空白鍵</p>
+          <p class="instructions" id="instructions">按住投幣鍵蓄力，放開發射；按越久滾越遠</p>
           <div class="control-row">
             <button class="icon-button" id="soundButton" type="button" aria-label="關閉音效" aria-pressed="true">
               <span aria-hidden="true">♪</span>
@@ -85,10 +83,15 @@
             <button class="auto-button" id="autoButton" type="button" aria-pressed="false">
               <span aria-hidden="true">↻</span><span>AUTO</span>
             </button>
-            <button class="drop-button" id="dropButton" type="button">
-              <span class="drop-button__coin" aria-hidden="true"></span>
-              <span>投幣</span>
-              <kbd>SPACE</kbd>
+            <button class="drop-button" id="dropLeft" type="button">
+              <span class="drop-button__charge" aria-hidden="true"></span>
+              <span class="drop-button__label">左側投幣</span>
+              <kbd>←</kbd>
+            </button>
+            <button class="drop-button" id="dropRight" type="button">
+              <span class="drop-button__charge" aria-hidden="true"></span>
+              <span class="drop-button__label">右側投幣</span>
+              <kbd>→</kbd>
             </button>
           </div>
         </footer>
@@ -166,7 +169,7 @@
       <p class="eyebrow">HOW TO PLAY</p>
       <h2 id="onboardingTitle">瞄準、推落、連擊</h2>
       <ol>
-        <li><strong>選位置</strong><span>拖曳場景或使用左右方向鍵瞄準。</span></li>
+        <li><strong>選一側</strong><span>硬幣從左軌或右軌滾進來，按住越久力道越大、滾得越遠。</span></li>
         <li><strong>抓節奏</strong><span>趁推板後退時投幣，能堆出更有利的位置。</span></li>
         <li><strong>追綠幣</strong><span>綠色星幣價值 3 分；連續掉落還有額外獎勵。</span></li>
       </ol>

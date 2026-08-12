@@ -4,13 +4,11 @@ import { GAME } from './game/config.js';
 // Slider id -> the setPhysics key it drives, and how many decimals its readout shows.
 // Order is display order; `resize` marks the one that has to reseed the pile on release.
 //
-// Only the two knobs that measurably move difficulty are exposed. Over a 120 s sim (2 seeds,
-// ~268 drops) thickness took the coin count resting on the field from 81 down to 39, and ground
-// friction moved it 69 / 81 / 88 across its range - both monotonic. The ones left out either
-// measured flat (payout tilt: 0.3 and 1.2 both gave 81) or barely moved it (coin-to-coin +3,
-// pusher friction -7, and that one in the counter-intuitive direction). Mass is inert by
-// construction: weight, inertia and the friction ceiling all scale with it together.
-// setPhysics and TUNING_DEFAULTS still carry every key, so re-adding a slider is markup only.
+// Only the two player-facing difficulty knobs are exposed. Thickness decides whether coins climb
+// or slide; table friction decides how long an impulse survives. Coin-to-coin and pusher friction
+// remain calibrated implementation details: exposing all three invites combinations that either
+// break the force chain or drag the tray pile backwards. setPhysics and TUNING_DEFAULTS still
+// carry every key for diagnostics.
 export const TUNING_CONTROLS = Object.freeze([
   { id: 'tuneThickness', key: 'thickness', digits: 2, resize: true },
   { id: 'tuneGroundFriction', key: 'groundFriction', digits: 2 },
@@ -20,7 +18,7 @@ export function collectUI() {
   const ids = [
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
     'gameCanvas', 'field', 'loading', 'loadError', 'errorMessage', 'retryButton',
-    'reward', 'rewardAmount', 'rewardCombo', 'aimValue', 'dropButton', 'autoButton',
+    'reward', 'rewardAmount', 'rewardCombo', 'dropLeft', 'dropRight', 'autoButton',
     'soundButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
     'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset',
     'hdriHorizontal', 'hdriHorizontalValue', 'hdriVertical', 'hdriVerticalValue', 'hdriReset',
@@ -41,11 +39,20 @@ export class GameUI {
     this.el.bestScore.textContent = state.bestScore;
     this.el.missionValue.textContent = `推落 ${Math.min(state.score, GAME.missionTarget)} / ${GAME.missionTarget}`;
     this.el.missionBar.style.width = `${Math.min(100, (state.score / GAME.missionTarget) * 100)}%`;
-    this.el.dropButton.disabled = state.credits <= 0 || !state.ready;
-    this.el.autoButton.disabled = state.credits <= 0 || !state.ready;
+    const idle = state.credits <= 0 || !state.ready;
+    this.el.dropLeft.disabled = idle;
+    this.el.dropRight.disabled = idle;
+    this.el.autoButton.disabled = idle;
   }
 
-  setAim(label) { this.el.aimValue.textContent = label; }
+  // The charge bar is a CSS animation, so this only has to say which button is filling. Restarting
+  // it needs the class off for a frame, or a second press on the same button inherits the finished
+  // animation and shows a full bar immediately.
+  setCharging(side) {
+    for (const [buttonSide, button] of [[1, this.el.dropLeft], [-1, this.el.dropRight]]) {
+      button.classList.toggle('is-charging', buttonSide === side);
+    }
+  }
 
   setTunePanel(open) {
     this.el.tunePanel.hidden = !open;

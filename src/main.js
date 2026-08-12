@@ -2,7 +2,7 @@ import './styles.css';
 import { CoinPusher } from './game/CoinPusher.js';
 import { GAME, getQualityProfile } from './game/config.js';
 import { TUNING_DEFAULTS } from './game/physics.js';
-import { aimLabel, calculateReward, worldAimToScreen } from './game/rules.js';
+import { CHARGE_SECONDS, calculateReward, chargeToPower } from './game/rules.js';
 import { GameAudio } from './audio.js';
 import { loadProgress, saveProgress } from './storage.js';
 import { collectUI, GameUI, TUNING_CONTROLS } from './ui.js';
@@ -75,7 +75,7 @@ function stopAuto() {
   ui.setAuto(false);
 }
 
-function attemptDrop() {
+function attemptDrop(side, power) {
   if (!state.ready || !game) return;
   audio.ensureContext();
   if (state.credits <= 0) {
@@ -84,7 +84,7 @@ function attemptDrop() {
     ui.announce('硬幣用完了，等待機台上的硬幣掉落，或重新開始。');
     return;
   }
-  if (!game.dropAtAim()) {
+  if (!game.drop(side, power)) {
     audio.error();
     ui.announce('投幣槽忙碌中，請稍後再試。');
     return;
@@ -93,6 +93,37 @@ function attemptDrop() {
   audio.drop();
   navigator.vibrate?.(12);
   renderState();
+}
+
+// Press-and-hold charging, in one place. The buttons, the arrow keys and a press on the canvas all
+// funnel through here, so the three of them cannot drift apart on what a given hold is worth.
+// The bar itself is a CSS animation; this only keeps the timestamp, so there is no rAF loop.
+let charge = null;
+
+function beginCharge(side) {
+  if (!state.ready || !game || charge?.side === side) return;
+  if (state.credits <= 0) {
+    audio.error();
+    ui.announce('硬幣用完了，等待機台上的硬幣掉落，或重新開始。');
+    return;
+  }
+  audio.ensureContext();
+  charge = { side, at: performance.now() };
+  game.armSide(side);
+  ui.setCharging(side);
+}
+
+function releaseCharge() {
+  if (!charge) return;
+  const { side, at } = charge;
+  charge = null;
+  ui.setCharging(0);
+  attemptDrop(side, chargeToPower((performance.now() - at) / 1000));
+}
+
+function cancelCharge() {
+  charge = null;
+  ui.setCharging(0);
 }
 
 function toggleAuto() {
@@ -109,9 +140,16 @@ function toggleAuto() {
   state.auto = true;
   ui.setAuto(true);
   ui.announce('已開啟自動投幣');
-  attemptDrop();
+  // Alternating sides at a middling power: an unattended machine should still spread its coins,
+  // and alternating is the only pattern a watching player can predict.
+  let autoSide = 1;
+  const autoDrop = () => {
+    attemptDrop(autoSide, 0.45);
+    autoSide = -autoSide;
+  };
+  autoDrop();
   autoTimer = window.setInterval(() => {
-    if (!document.hidden && !elements.onboarding.open) attemptDrop();
+    if (!document.hidden && !elements.onboarding.open) autoDrop();
   }, GAME.autoInterval * 1000);
 }
 
@@ -235,7 +273,15 @@ function bindUI() {
     ui.announce('物理參數已回到預設值');
   });
 
-  elements.dropButton.addEventListener('click', attemptDrop);
+  for (const [side, button] of [[1, elements.dropLeft], [-1, elements.dropRight]]) {
+    button.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      beginCharge(side);
+    });
+    button.addEventListener('pointerup', releaseCharge);
+    button.addEventListener('pointerleave', cancelCharge);
+    button.addEventListener('pointercancel', cancelCharge);
+  }
   elements.autoButton.addEventListener('click', toggleAuto);
   elements.soundButton.addEventListener('click', () => {
     audio.setEnabled(!audio.enabled);
@@ -267,21 +313,23 @@ function bindUI() {
     event.preventDefault();
     closeOnboarding();
   });
+  // Held keys repeat, and a repeat must not restart the charge - beginCharge already ignores a
+  // press on the side it is charging, so the guard is only about not stealing the other side.
   elements.gameCanvas.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowLeft') {
+    const side = { ArrowLeft: 1, ArrowRight: -1 }[event.key];
+    if (side) {
       event.preventDefault();
-      game?.moveAimOnScreen(-0.25);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      game?.moveAimOnScreen(0.25);
-    } else if (event.key === ' ' || event.key === 'Enter') {
-      event.preventDefault();
-      attemptDrop();
+      if (!event.repeat) beginCharge(side);
     } else if (event.key.toLowerCase() === 'a') {
       event.preventDefault();
       toggleAuto();
     }
   });
+  elements.gameCanvas.addEventListener('keyup', (event) => {
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') releaseCharge();
+  });
+  // A charge left running because focus moved away would fire on the next unrelated press.
+  window.addEventListener('blur', cancelCharge);
   document.addEventListener('visibilitychange', () => {
     if (!game || elements.onboarding.open) return;
     if (document.hidden) game.stop();
@@ -291,12 +339,15 @@ function bindUI() {
 }
 
 async function boot() {
+  // CSS animates the charge bar, rules.js decides how long a full charge takes; this is the seam.
+  document.documentElement.style.setProperty('--charge-duration', `${CHARGE_SECONDS}s`);
   bindUI();
   renderState();
   try {
     game = await new CoinPusher(elements.gameCanvas, quality, {
-      onTap: attemptDrop,
-      onAim: (value) => ui.setAim(aimLabel(worldAimToScreen(value))),
+      onPressStart: beginCharge,
+      onPressEnd: releaseCharge,
+      onPressCancel: cancelCharge,
       onScore: handleScore,
       onError: (message) => ui.error(message),
     }).init();
