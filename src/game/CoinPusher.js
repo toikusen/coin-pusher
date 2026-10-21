@@ -305,8 +305,12 @@ export class CoinPusher {
     const goldAccent = new THREE.PointLight(PALETTE.gold, 1.1, 12);
     goldAccent.position.set(5.2, 4.4, -1.2);
     scene.add(goldAccent);
-    // Cool rim from behind the cabinet, matching the mock's corridor lighting.
-    const rimAccent = new THREE.PointLight(PALETTE.blue, 3.2, 18);
+    // Cool rim from behind the cabinet, matching the mock's corridor lighting. Its range is what
+    // keeps it a rim: it sits on the centre line like the camera, so its mirror point on the bed is
+    // the centre line too, at z -1.2, 7.66 away - and at 18 it painted a blue hot spot down the
+    // middle of the payout area every time the tray pulled back. 6.5 stops short of that point
+    // and still reaches the scraper (3.1) and the middle of the tray (6.2).
+    const rimAccent = new THREE.PointLight(PALETTE.blue, 3.2, 6.5);
     rimAccent.position.set(0, 4.2, 5.2);
     scene.add(rimAccent);
     const purpleAccent = new THREE.PointLight(PALETTE.goldSoft, 1.4, 16);
@@ -316,13 +320,48 @@ export class CoinPusher {
     return this.loadCoinEnvironment();
   }
 
+  // What every metal surface in the machine reflects. It used to be decor_shop_1k.hdr, a bright
+  // daylit shop interior: the coins and the gold trim mirrored windows and warm room light while
+  // standing in a dark neon hall, which is most of why the machine read as pasted in front of its
+  // backdrop. This is the hall instead, built rather than loaded - a navy corridor with the
+  // backdrop's mint wall columns, gold ceiling rings and teal far glow, in PALETTE. Colours are
+  // pushed past 1 on purpose: PMREM renders to half float, and it is the over-bright strips that
+  // give a coin a crisp highlight rather than a grey sheen.
   async loadCoinEnvironment() {
-    const { RGBELoader } = await import('three/addons/loaders/RGBELoader.js');
-    const sourceTexture = await new RGBELoader().loadAsync('/environment/decor_shop_1k.hdr');
+    const room = new THREE.Scene();
+    room.background = new THREE.Color(PALETTE.scene);
+    const lit = (color, strength) => new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color).multiplyScalar(strength),
+      side: THREE.DoubleSide,
+    });
+    const add = (geometry, material, x, y, z) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, y, z);
+      room.add(mesh);
+      return mesh;
+    };
+    add(new THREE.BoxGeometry(24, 12, 60), new THREE.MeshBasicMaterial({ color: PALETTE.dark, side: THREE.BackSide }), 0, 4, 0);
+    const column = new THREE.BoxGeometry(0.2, 7, 0.2);
+    const mint = lit(PALETTE.mint, 4);
+    for (let z = -24; z <= 24; z += 4) {
+      for (const x of [-11.8, 11.8]) add(column, mint, x, 3.5, z);
+    }
+    const gold = lit(PALETTE.gold, 3);
+    for (let z = -20; z <= 20; z += 8) {
+      add(new THREE.TorusGeometry(3.2, 0.08, 6, 48), gold, 0, 9.9, z).rotation.x = Math.PI / 2;
+    }
+    // Soft warm panel straight overhead, where playfieldFill hangs: the top light coins and gold
+    // trim read their colour by. Dimmer than the neon so it lifts rather than whitens.
+    add(new THREE.PlaneGeometry(14, 22), lit(PALETTE.white, 1.0), 0, 9.95, 2).rotation.x = Math.PI / 2;
+    add(new THREE.PlaneGeometry(10, 8), lit(PALETTE.mintSoft, 1.6), 0, 4, 29.9);
+
     const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
-    this.environmentTexture = pmremGenerator.fromEquirectangular(sourceTexture).texture;
-    sourceTexture.dispose();
+    this.environmentTexture = pmremGenerator.fromScene(room, 0.04).texture;
     pmremGenerator.dispose();
+    room.traverse((object) => {
+      object.geometry?.dispose();
+      object.material?.dispose();
+    });
   }
 
   // The mock's look is mostly bloom: neon trim and gold rims bleeding into the dark cabinet.
@@ -828,6 +867,48 @@ export class CoinPusher {
     return art;
   }
 
+  // A gantry for the slot machine, which otherwise hangs in mid-air over the front of the machine.
+  // Built here rather than in build_cabinet.py because the slot is fixed in world space and the
+  // cabinet is not: the geometry panel slides and stretches the cabinet along z, and at its short
+  // settings the side walls end well behind z -4, so posts standing on them would stand on nothing.
+  // These stand on the hall floor instead, at x +-5, which at the slot's depth is outside the frame
+  // (about +-2.8 visible there) - what the player sees is the beam the machine sits on, spanning
+  // the shot. The beam is far above every sight line to the bed and tray (those cross z -4 under
+  // y 3.4) and nowhere near the coin rain or chest drop, both over the upper tray. No shadows, for
+  // the same reason as the slot itself.
+  mountSlot(slot) {
+    const FLOOR_Y = -2.78;
+    const BEAM = { width: 10.4, height: 0.16, depth: 0.4 };
+    const POST_X = 5.0;
+    const body = new THREE.MeshStandardMaterial({
+      color: PALETTE.shellRaised,
+      metalness: 0.6,
+      roughness: 0.35,
+      envMap: this.environmentTexture,
+      envMapIntensity: 0.55,
+    });
+    const trim = new THREE.MeshStandardMaterial({
+      color: PALETTE.gold,
+      metalness: 0.9,
+      roughness: 0.3,
+      emissive: PALETTE.gold,
+      emissiveIntensity: 0.35,
+      envMap: this.environmentTexture,
+      envMapIntensity: 0.55,
+    });
+    const part = (material, width, height, depth, x, y, z) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+      mesh.position.set(x, y, z);
+      slot.add(mesh);
+    };
+    // Group-local: y is height above slotY, the slot's own base.
+    part(body, BEAM.width, BEAM.height, BEAM.depth, 0, -BEAM.height / 2, 0);
+    // The thin gold horizontal is the backdrop's language for a structural line.
+    part(trim, BEAM.width, 0.03, 0.01, 0, -BEAM.height / 2, -BEAM.depth / 2 - 0.005);
+    const postHeight = GAME.slotY - FLOOR_Y;
+    for (const x of [-POST_X, POST_X]) part(body, 0.3, postHeight, 0.3, x, -postHeight / 2, 0);
+  }
+
   // Gold panel frames across the scraper's face, the same motif build_cabinet.py puts on the side
   // walls. The scraper is a plain board in the middle of the shot, and a flat texture on a surface
   // seen this dark reads as nothing; thin lit relief does. Children of the scraper, so they follow
@@ -1327,6 +1408,10 @@ export class CoinPusher {
     }
     if (!this.slotModelSource) return;
     const slot = this.fitProp(this.slotModelSource, GAME.slotWidth);
+    // It hangs in the air over the front of the machine, so the key light dropped its whole
+    // footprint onto the middle of the bed as a hard black block with nothing visibly above it.
+    slot.traverse((object) => { object.castShadow = false; });
+    this.mountSlot(slot);
     slot.rotation.y = GAME.slotYaw;
     slot.position.set(0, GAME.slotY, GAME.slotZ);
     this.scene.add(slot);
@@ -1675,9 +1760,14 @@ export class CoinPusher {
   addHall() {
     const HALL_Z = 11;
     const HALL_ASPECT = 2.334;
-    // Measured off the art, not guessed: the row where the corridor converges. Everything below
-    // it is painted floor, which the real floor plane hides.
+    // Measured off the art, not guessed: the row where the corridor converges.
     const HALL_HORIZON = 0.387;
+    // Where that row goes: at the camera's own eye height. The art is an eye-level photograph,
+    // and a horizon always sits at the viewer's eye. It used to sit on the hall floor, 8.2 below
+    // the camera, which put the corridor's vanishing point about 22 degrees under where this
+    // camera's real horizon is - the hall read as photographed from the floor while the player
+    // looks down into the machine from above it, a flat poster stood up behind the cabinet.
+    const HALL_EYE_Y = this.camera.position.y;
     // Above the 12.9 minimum on purpose, and not only for the width. Scaling the plane up moves
     // the visible band down the painting: at the minimum the frame is filled by the nearest
     // ceiling ring, and it takes roughly this much to trade that for the receding corridor, which
@@ -1691,7 +1781,7 @@ export class CoinPusher {
       // would smear across it as flat blobs. Fog still applies, which is what sells the depth.
       new THREE.MeshBasicMaterial({ map: this.hallTexture, color: 0xcdd8e2 }),
     );
-    hall.position.set(0, -2.78 + height * (0.5 - HALL_HORIZON), HALL_Z);
+    hall.position.set(0, HALL_EYE_Y + height * (0.5 - HALL_HORIZON), HALL_Z);
     hall.rotation.y = Math.PI;
     this.scene.add(hall);
   }
