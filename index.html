@@ -53,7 +53,7 @@
             id="gameCanvas"
             tabindex="0"
             role="application"
-            aria-label="3D 推幣機遊戲區。按住左右方向鍵蓄力投幣，放開發射，A 鍵切換自動投幣。"
+            aria-label="3D 推幣機遊戲區。拖曳或用左右方向鍵移動前方發射器，按空白鍵發射。"
           ></canvas>
 
           <div class="reward" id="reward" aria-hidden="true">
@@ -75,7 +75,7 @@
         </div>
 
         <footer class="controls">
-          <p class="instructions" id="instructions">按住投幣鍵蓄力，放開發射；按越久滾越遠</p>
+          <p class="instructions" id="instructions">拖曳定位發射器，落點固定在推板前方</p>
           <div class="control-row">
             <button class="icon-button" id="soundButton" type="button" aria-label="關閉音效" aria-pressed="true">
               <span aria-hidden="true">♪</span>
@@ -83,15 +83,18 @@
             <button class="auto-button" id="autoButton" type="button" aria-pressed="false">
               <span aria-hidden="true">↻</span><span>AUTO</span>
             </button>
-            <button class="drop-button" id="dropLeft" type="button">
-              <span class="drop-button__charge" aria-hidden="true"></span>
-              <span class="drop-button__label">左側投幣</span>
-              <kbd>←</kbd>
-            </button>
-            <button class="drop-button" id="dropRight" type="button">
-              <span class="drop-button__charge" aria-hidden="true"></span>
-              <span class="drop-button__label">右側投幣</span>
-              <kbd>→</kbd>
+            <div class="aim-control" aria-label="發射器位置">
+              <button class="aim-button" id="aimLeft" type="button" aria-label="發射器向左移動">‹</button>
+              <label for="aimSlider">
+                <span>LAUNCHER POSITION</span>
+                <input id="aimSlider" type="range" min="-100" max="100" step="1" value="0" aria-valuetext="中央" />
+              </label>
+              <button class="aim-button" id="aimRight" type="button" aria-label="發射器向右移動">›</button>
+            </div>
+            <button class="drop-button" id="dropButton" type="button">
+              <span class="drop-button__coin" aria-hidden="true">●</span>
+              <span class="drop-button__label">發射</span>
+              <kbd>SPACE</kbd>
             </button>
           </div>
         </footer>
@@ -141,6 +144,39 @@
           </fieldset>
 
           <fieldset class="tune-group">
+            <legend>幾何</legend>
+
+            <label class="tune-control" for="geoScraperZ">
+              <span>擋板位置</span><output id="geoScraperZValue" for="geoScraperZ">4.04</output>
+            </label>
+            <input id="geoScraperZ" type="range" min="2.9" max="6" step="0.02" value="4.04" />
+
+            <label class="tune-control" for="geoUpperCenterZ">
+              <span>上層推板中心</span><output id="geoUpperCenterZValue" for="geoUpperCenterZ">1.88</output>
+            </label>
+            <input id="geoUpperCenterZ" type="range" min="1.2" max="2.4" step="0.02" value="1.88" />
+
+            <label class="tune-control" for="geoUpperLength">
+              <span>上層推板長度</span><output id="geoUpperLengthValue" for="geoUpperLength">6.33</output>
+            </label>
+            <input id="geoUpperLength" type="range" min="5.6" max="9" step="0.02" value="6.33" />
+
+            <label class="tune-control" for="geoLowerCenterZ">
+              <span>下層平台中心</span><output id="geoLowerCenterZValue" for="geoLowerCenterZ">-0.17</output>
+            </label>
+            <input id="geoLowerCenterZ" type="range" min="-0.45" max="1.2" step="0.01" value="-0.17" />
+
+            <label class="tune-control" for="geoLowerLength">
+              <span>下層平台長度</span><output id="geoLowerLengthValue" for="geoLowerLength">9.06</output>
+            </label>
+            <input id="geoLowerLength" type="range" min="7.6" max="13" step="0.02" value="9.06" />
+
+            <p class="tune-hint">數字是機台座標的 Z 軸位置與長度（正值靠機台後方）。放開滑桿才會重排硬幣堆。下層平台能多長取決於中心：出幣口不會壓過發射器，所以中心越後面能拉越長。</p>
+            <p class="tune-hint tune-hint--note">擋板最多只能退到下層平台的後緣：要再往後，先把下層平台的中心往後移或加長。推板長度會自動加長到蓋住擋板。</p>
+            <p class="tune-hint">擋板減去上層推板中心大於 2.16 時，推板上會出現掃不到的區域，硬幣容易卡住不下來——兩者一起往後移就不會。</p>
+          </fieldset>
+
+          <fieldset class="tune-group">
             <legend>HDR 反射</legend>
 
             <label class="tune-control" for="hdriHorizontal">
@@ -154,8 +190,23 @@
             <input id="hdriVertical" type="range" min="-90" max="90" step="1" value="0" />
           </fieldset>
 
+          <fieldset class="tune-group">
+            <legend>寶箱測試</legend>
+
+            <label class="tune-control" for="cheatSlot"><span>拉霸結果</span></label>
+            <select class="tune-select" id="cheatSlot"></select>
+            <p class="tune-hint">固定每一次的轉動結果，選「隨機」回到正常機率：<span id="cheatOdds"></span>。重新載入頁面就會清掉。</p>
+
+            <div class="tune-actions">
+              <button class="tune-reset" id="cheatDrop" type="button">投入寶箱</button>
+              <button class="tune-reset" id="cheatSpin" type="button">直接轉拉霸</button>
+            </div>
+            <p class="tune-hint tune-hint--note">投入的寶箱要自己推過整台機器才會開獎（約兩分鐘）。直接轉拉霸會跳過推的過程立刻結算，是驗證獎項最快的方式。</p>
+          </fieldset>
+
           <div class="tune-actions">
             <button class="tune-reset" id="tunePhysicsReset" type="button">重設物理</button>
+            <button class="tune-reset" id="tuneGeometryReset" type="button">重設幾何</button>
             <button class="tune-reset" id="hdriReset" type="button">重設角度</button>
           </div>
           </div>
@@ -169,11 +220,14 @@
       <p class="eyebrow">HOW TO PLAY</p>
       <h2 id="onboardingTitle">瞄準、推落、連擊</h2>
       <ol>
-        <li><strong>選一側</strong><span>硬幣從左軌或右軌滾進來，按住越久力道越大、滾得越遠。</span></li>
-        <li><strong>抓節奏</strong><span>趁推板後退時投幣，能堆出更有利的位置。</span></li>
-        <li><strong>追綠幣</strong><span>綠色星幣價值 3 分；連續掉落還有額外獎勵。</span></li>
+        <li><strong>左右瞄準</strong><span>拖曳遊戲畫面或使用方向鍵，移動玩家面前的發射器。</span></li>
+        <li><strong>放心發射</strong><span>金色落點會跟著推板移動；每一枚硬幣都會落在推板安全區內。</span></li>
+        <li><strong>抓準節奏</strong><span>按空白鍵發射，趁推板後退時堆幣，更容易形成連續推落。</span></li>
       </ol>
       <button class="primary-button" id="startButton" type="button">開始挑戰</button>
+      <p class="asset-credit">
+        3D 寶箱、拉霸機：以 <a href="https://www.tripo3d.ai/" target="_blank" rel="noopener noreferrer">Tripo AI</a> 生成 · 已調整比例與配色
+      </p>
     </dialog>
 
     <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>

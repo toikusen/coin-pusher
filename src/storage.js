@@ -8,6 +8,8 @@ const defaults = Object.freeze({
   hdriVertical: 0,
   // Sparse patch of physics knobs the player changed; validated in main.js before use.
   tuning: {},
+  // Same deal for the machine's Z layout; machineGeometryFor() clamps whatever comes back.
+  geometry: {},
 });
 
 export function loadProgress() {

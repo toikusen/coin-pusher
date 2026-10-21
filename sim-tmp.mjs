@@ -3,7 +3,7 @@
 import * as CANNON from 'cannon-es';
 import { GAME } from '/Users/seitumbp2025/coin-pusher/src/game/config.js';
 import {
-  COIN_HEIGHT, COIN_RADIUS, COIN_MASS, CONTACT_SOLVER_OPTIONS,
+  COIN_HEIGHT, COIN_RADIUS, COIN_MASS, COIN_SEGMENTS, CONTACT_SOLVER_OPTIONS,
   COIN_GROUND_FRICTION, COIN_COIN_FRICTION, COIN_PUSHER_FRICTION,
   COIN_LINEAR_DAMPING, COIN_ANGULAR_DAMPING,
   seedPosition, pusherMotionAt,
@@ -65,7 +65,7 @@ export function build() {
       mass: COIN_MASS, material: coinMat, allowSleep: true,
       sleepSpeedLimit: 0.18, sleepTimeLimit: 0.45,
     });
-    b.addShape(new CANNON.Cylinder(COIN_RADIUS, COIN_RADIUS, COIN_HEIGHT, 20));
+    b.addShape(new CANNON.Cylinder(COIN_RADIUS, COIN_RADIUS, COIN_HEIGHT, Number(process.env.SEGMENTS) || COIN_SEGMENTS));
     b.linearDamping = COIN_LINEAR_DAMPING;
     b.angularDamping = COIN_ANGULAR_DAMPING;
     return b;

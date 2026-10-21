@@ -14,15 +14,28 @@ export const TUNING_CONTROLS = Object.freeze([
   { id: 'tuneGroundFriction', key: 'groundFriction', digits: 2 },
 ]);
 
+// Slider id -> the machineGeometryFor key it drives. Every one of them resizes colliders and
+// reseeds the pile on release, so unlike the physics knobs there is no cheap-to-apply subset.
+export const GEOMETRY_CONTROLS = Object.freeze([
+  { id: 'geoScraperZ', key: 'scraperZ' },
+  { id: 'geoUpperCenterZ', key: 'upperCenterZ' },
+  { id: 'geoUpperLength', key: 'upperLength' },
+  { id: 'geoLowerCenterZ', key: 'lowerCenterZ' },
+  { id: 'geoLowerLength', key: 'lowerLength' },
+]);
+
 export function collectUI() {
   const ids = [
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
     'gameCanvas', 'field', 'loading', 'loadError', 'errorMessage', 'retryButton',
-    'reward', 'rewardAmount', 'rewardCombo', 'dropLeft', 'dropRight', 'autoButton',
+    'reward', 'rewardAmount', 'rewardCombo', 'dropButton', 'aimLeft', 'aimRight',
+    'aimSlider', 'autoButton',
     'soundButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
-    'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset',
+    'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset', 'tuneGeometryReset',
     'hdriHorizontal', 'hdriHorizontalValue', 'hdriVertical', 'hdriVerticalValue', 'hdriReset',
+    'cheatSlot', 'cheatOdds', 'cheatDrop', 'cheatSpin',
     ...TUNING_CONTROLS.flatMap((control) => [control.id, `${control.id}Value`]),
+    ...GEOMETRY_CONTROLS.flatMap((control) => [control.id, `${control.id}Value`]),
   ];
   return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
@@ -40,18 +53,18 @@ export class GameUI {
     this.el.missionValue.textContent = `推落 ${Math.min(state.score, GAME.missionTarget)} / ${GAME.missionTarget}`;
     this.el.missionBar.style.width = `${Math.min(100, (state.score / GAME.missionTarget) * 100)}%`;
     const idle = state.credits <= 0 || !state.ready;
-    this.el.dropLeft.disabled = idle;
-    this.el.dropRight.disabled = idle;
+    this.el.dropButton.disabled = idle;
+    this.el.aimLeft.disabled = !state.ready;
+    this.el.aimRight.disabled = !state.ready;
+    this.el.aimSlider.disabled = !state.ready;
     this.el.autoButton.disabled = idle;
   }
 
-  // The charge bar is a CSS animation, so this only has to say which button is filling. Restarting
-  // it needs the class off for a frame, or a second press on the same button inherits the finished
-  // animation and shows a full bar immediately.
-  setCharging(side) {
-    for (const [buttonSide, button] of [[1, this.el.dropLeft], [-1, this.el.dropRight]]) {
-      button.classList.toggle('is-charging', buttonSide === side);
-    }
+  setAim(aim) {
+    const value = Math.round(Math.min(1, Math.max(-1, aim)) * 100);
+    this.el.aimSlider.value = value;
+    const position = Math.abs(value) < 4 ? '中央' : value < 0 ? `左側 ${Math.abs(value)}%` : `右側 ${value}%`;
+    this.el.aimSlider.setAttribute('aria-valuetext', position);
   }
 
   setTunePanel(open) {
@@ -66,6 +79,39 @@ export class GameUI {
       this.el[id].value = tuning[key];
       this.el[`${id}Value`].value = Number(tuning[key]).toFixed(digits);
     }
+  }
+
+  // Same job as setTuning, and it has one more reason to exist: machineGeometryFor clamps what
+  // it is given - the upper deck grows to stay under the scraper - so the applied geometry is not
+  // always the one the slider was dropped on, and the panel has to show what the machine took.
+  setGeometry(geometry) {
+    for (const { id, key } of GEOMETRY_CONTROLS) {
+      this.el[id].value = geometry[key];
+      this.el[`${id}Value`].value = Number(geometry[key]).toFixed(2);
+    }
+  }
+
+  // The cheat select and its odds line are both built from GAME.slotOutcomes, so a new reel
+  // symbol shows up here on its own: one config entry, one prize handler in main.js, no third
+  // list to keep in step. slot is whatever the query string already forced, or null.
+  initCheats(slot) {
+    const options = [
+      ['', '隨機（正常機率）'],
+      ...GAME.slotOutcomes.map(({ symbol, label }) => [symbol, `一定 ${label}`]),
+      ['miss', '一定沒中'],
+    ];
+    this.el.cheatSlot.replaceChildren(...options.map(([value, text]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      return option;
+    }));
+    this.el.cheatSlot.value = slot ?? '';
+    const paid = GAME.slotOutcomes.reduce((sum, outcome) => sum + outcome.chance, 0);
+    this.el.cheatOdds.textContent = [
+      ...GAME.slotOutcomes.map(({ label, chance }) => `${label} ${Math.round(chance * 100)}%`),
+      `沒中 ${Math.round((1 - paid) * 100)}%`,
+    ].join('、');
   }
 
   setHdriRotation(horizontal, vertical) {
@@ -96,12 +142,15 @@ export class GameUI {
     this.el.loadError.hidden = false;
   }
 
-  reward({ total, combo, premium, bonus }) {
+  // jackpot is the prize's own headline when a chest pays - '' or absent for a normal payout.
+  reward({ total, combo, premium, bonus, jackpot }) {
     clearTimeout(this.rewardTimer);
     this.el.rewardAmount.textContent = `+${total}`;
     // The bonus is paid once per chain, so it cannot carry the combo readout on its own: past
     // the threshold the count still has to be visible on the payouts that earn no bonus.
-    this.el.rewardCombo.textContent = bonus > 0
+    this.el.rewardCombo.textContent = jackpot
+      ? jackpot
+      : bonus > 0
       ? `COMBO ×${combo} · BONUS +${bonus}`
       : combo >= GAME.comboThreshold
         ? `COMBO ×${combo}`

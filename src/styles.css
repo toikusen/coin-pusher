@@ -205,7 +205,7 @@ canvas:focus-visible {
 }
 
 .field { min-height: 0; position: relative; overflow: hidden; background: var(--ink-950); }
-.field canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+.field canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: ew-resize; }
 
 /* Diorama framing. In CSS rather than a foreground plane in the scene: the camera is fixed, so
    there is no parallax to buy, and this costs no draw call. */
@@ -312,6 +312,18 @@ canvas:focus-visible {
   cursor: ew-resize;
 }
 .tune-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem; }
+.tune-group .tune-actions { margin-top: 0.35rem; }
+.tune-select {
+  width: 100%;
+  margin: 0.1rem 0 0.15rem;
+  padding: 0.35rem 0.4rem;
+  border: 0.0625rem solid var(--line);
+  background: rgba(46, 230, 210, 0.08);
+  color: var(--text-strong);
+  font: 600 0.72rem/1.2 var(--font-tech);
+  cursor: pointer;
+}
+.tune-select:hover { border-color: var(--line-strong); }
 .tune-reset {
   --c: 0.4rem;
   --rim: var(--line);
@@ -360,17 +372,17 @@ canvas:focus-visible {
   background: linear-gradient(180deg, var(--surface), var(--ink-850));
 }
 .instructions { margin: 0 0 var(--space-2); color: var(--text-muted); font-size: 0.75rem; text-align: center; }
-.control-row { min-height: 3.7rem; display: grid; grid-template-columns: 3.25rem 3.7rem repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.control-row { min-height: 3.7rem; display: grid; grid-template-columns: 3.25rem 3.7rem minmax(0, 1fr) 6.4rem; gap: var(--space-2); }
 
-.icon-button, .auto-button, .drop-button, .primary-button, .secondary-button, .session-actions button {
+.icon-button, .auto-button, .aim-button, .drop-button, .primary-button, .secondary-button, .session-actions button {
   min-width: 2.75rem;
   min-height: 2.75rem;
   cursor: pointer;
   transition: transform 0.18s var(--ease-out), color 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
 }
-.icon-button:hover, .auto-button:hover, .drop-button:hover, .session-actions button:hover { transform: translateY(-0.125rem); }
-.icon-button:active, .auto-button:active, .drop-button:active { transform: scale(0.97); }
-.icon-button:disabled, .auto-button:disabled, .drop-button:disabled { cursor: not-allowed; opacity: 0.45; transform: none; }
+.icon-button:hover, .auto-button:hover, .aim-button:hover, .drop-button:hover, .session-actions button:hover { transform: translateY(-0.125rem); }
+.icon-button:active, .auto-button:active, .aim-button:active, .drop-button:active { transform: scale(0.97); }
+.icon-button:disabled, .auto-button:disabled, .aim-button:disabled, .drop-button:disabled { cursor: not-allowed; opacity: 0.45; transform: none; }
 
 .icon-button, .auto-button {
   --c: 0.55rem;
@@ -387,6 +399,47 @@ canvas:focus-visible {
   color: var(--ink-900);
   filter: drop-shadow(0 0 0.8rem rgba(0, 200, 180, 0.55));
 }
+
+.aim-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  border: 0.0625rem solid rgba(242, 201, 76, 0.36);
+  border-radius: 0.75rem;
+  background: linear-gradient(180deg, rgba(242, 201, 76, 0.08), rgba(3, 7, 16, 0.72));
+  box-shadow: inset 0 0 0.8rem rgba(0, 0, 0, 0.42), 0 0 0.8rem rgba(242, 201, 76, 0.08);
+}
+.aim-control label { min-width: 0; display: grid; gap: 0.15rem; }
+.aim-control label span {
+  overflow: hidden;
+  color: var(--gold-400);
+  font: 700 0.52rem/1 var(--font-tech);
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aim-button {
+  min-width: 2rem;
+  min-height: 2.2rem;
+  padding: 0;
+  border: 0.0625rem solid var(--line);
+  border-radius: 0.45rem;
+  background: rgba(46, 230, 210, 0.08);
+  color: var(--teal-300);
+  font: 700 1.35rem/1 var(--font-tech);
+}
+.aim-control input[type="range"] {
+  width: 100%;
+  height: 1.15rem;
+  margin: 0;
+  accent-color: var(--gold-400);
+  cursor: ew-resize;
+}
+.aim-control input[type="range"]:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .drop-button {
   --c: 0.75rem;
@@ -412,25 +465,9 @@ canvas:focus-visible {
   animation: button-sheen 4s ease-in-out infinite;
 }
 .drop-button > * { position: relative; z-index: 1; }
-/* Charge bar. Driven by a CSS animation rather than a rAF loop in JS: the duration is the one
-   number that has to agree with rules.js, and main.js sets it from CHARGE_SECONDS at boot. */
-.drop-button__charge {
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 0.3rem;
-  transform-origin: left center;
-  transform: scaleX(0);
-  background: linear-gradient(90deg, var(--gold-400), var(--text-strong));
-  box-shadow: 0 0 0.6rem rgba(242, 201, 76, 0.8);
-}
-.drop-button.is-charging .drop-button__charge {
-  animation: charge-fill var(--charge-duration, 0.7s) linear forwards;
-}
-.drop-button.is-charging { filter: drop-shadow(0 0 1.4rem rgba(242, 201, 76, 0.75)); }
-@keyframes charge-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-
+.drop-button__coin { color: var(--gold-400); font-size: 0.7rem; text-shadow: 0 0 0.65rem rgba(242, 201, 76, 0.95); }
 .drop-button__label { white-space: nowrap; }
-.drop-button kbd { padding: 0.2rem 0.4rem; border: 0.0625rem solid rgba(3, 43, 40, 0.3); border-radius: 0.25rem; background: rgba(3, 43, 40, 0.12); font: 700 0.62rem/1 var(--font-tech); letter-spacing: 0.14em; }
+.drop-button kbd { padding: 0.2rem 0.3rem; border: 0.0625rem solid rgba(3, 43, 40, 0.3); border-radius: 0.25rem; background: rgba(3, 43, 40, 0.12); font: 700 0.54rem/1 var(--font-tech); letter-spacing: 0.06em; }
 
 .session-actions {
   position: absolute;
@@ -483,6 +520,14 @@ canvas:focus-visible {
   letter-spacing: 0.08em;
   filter: drop-shadow(0 0 1rem rgba(0, 200, 180, 0.45));
 }
+.asset-credit {
+  margin: 0.8rem 0 0;
+  color: var(--text-muted);
+  font: 500 0.62rem/1.45 var(--font-body);
+  text-align: center;
+}
+.asset-credit a { color: var(--teal-300); text-underline-offset: 0.16em; }
+.asset-credit a:hover { color: var(--gold-400); }
 
 .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
@@ -505,7 +550,8 @@ canvas:focus-visible {
   .mission { grid-column: 1; grid-row: 3; }
   .field { grid-column: 1; grid-row: 4; }
   .controls { grid-column: 2; grid-row: 2 / 5; display: flex; flex-direction: column; justify-content: center; border-top: 0; border-left: 0.0625rem solid var(--line); }
-  .control-row { grid-template-columns: 1fr 1fr; grid-template-rows: 3.5rem 4.5rem; }
+  .control-row { grid-template-columns: 1fr 1fr; grid-template-rows: 3.5rem 4.5rem 4.5rem; }
+  .aim-control { grid-column: 1 / -1; }
   .drop-button { grid-column: 1 / -1; }
 }
 
@@ -523,6 +569,10 @@ canvas:focus-visible {
   .mission__best { display: none; }
   .controls { padding-inline: var(--space-3); }
   .drop-button kbd { display: none; }
+  .control-row { grid-template-columns: 2.8rem 3.2rem minmax(0, 1fr) 4.8rem; gap: 0.35rem; }
+  .aim-control { grid-template-columns: 1.65rem minmax(0, 1fr) 1.65rem; padding-inline: 0.2rem; }
+  .aim-button { min-width: 1.65rem; }
+  .drop-button { gap: 0.3rem; font-size: 0.76rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

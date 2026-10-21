@@ -1,7 +1,7 @@
 import * as CANNON from 'cannon-es';
-import { GAME } from './config.js';
+import { COIN_RADIUS, GAME } from './config.js';
 
-export const COIN_RADIUS = 0.36;
+export { COIN_RADIUS };
 export const COIN_HEIGHT = 0.1;
 export const COIN_MASS = 0.05;
 // Fill most of the lower tier's safe slots while preserving a full receiving row in front of the
@@ -13,12 +13,78 @@ export const COIN_COIN_FRICTION = 0.3;
 export const COIN_PUSHER_FRICTION = 1;
 export const COIN_LINEAR_DAMPING = 0.12;
 export const COIN_ANGULAR_DAMPING = 0.58;
-// More rim faces keep coin-to-coin normals from jumping as crowded coins rotate.
-const COIN_SEGMENTS = 20;
+// Rim faces trade contact quality for narrowphase cost, and the cost is quadratic: cannon-es
+// clips every face of one convex hull against every face of the other, so a crowded pile at 20
+// segments spends ~16 ms per step against ~8 ms at 12 - past the 60 fps budget on its own once
+// two 120 Hz steps land in one frame. 12 keeps the rim round enough that a rail coin rolls
+// smoothly (3% radius wobble) and coin-to-coin normals stay stable in the pile.
+// ponytail: the real ceiling is convex-convex SAT. If the cap ever goes far past ~150 coins,
+// the upgrade is a cheap custom coin-coin narrowphase, not fewer faces.
+export const COIN_SEGMENTS = 12;
+
+// Where a chest is dropped in: hard against the scraper's front face, the deepest start that still
+// clears it, so the chest rides the full length of the machine before it can pay. 0.08 is the
+// scraper's half-thickness. The tray deck reaches under the scraper at every point of the stroke -
+// pusherRearExtension guards it - so there is always deck beneath this.
+export function chestDropZ(halfDepth) {
+  return GAME.scraperZ - 0.08 - halfDepth - 0.06;
+}
+
+// Catch the chest's first lower-bed landing and absorb that impact, so it thuds instead of
+// running the bed out; every later movement still comes from the coin pile, so the chest remains
+// a physical obstacle the player has to push.
+// The landing is only recognised behind the payout end, and that is the whole point of the z test:
+// the latch below needs the chest's centre to dip to within 0.12 of its resting height, which a
+// chest riding two or more coin layers never does on the way across - so the first time it dips is
+// when it tips over the lip. Treating that as a landing cancelled the payout: it used to teleport
+// the chest 0.84 back onto the bed and zero its forward velocity, so the slot machine never span
+// and the chest had to cross the whole dead span again. The teleport was stale geometry from a
+// shorter machine - the tray's front lip now travels z -2.20..2.16 and a released chest lands no
+// further forward than -2.6, well behind safeZ, so it could only ever fire on a chest at the lip.
+export function settleChestOnLowerBed(body, drop, halfHeight, halfDepth) {
+  if (drop.lowerBedLanded || body.position.y > halfHeight + 0.12) return false;
+  drop.lowerBedLanded = true;
+  if (body.position.z < GAME.edgeZ + halfDepth + COIN_RADIUS) return false;
+  body.velocity.z = Math.max(0, body.velocity.z);
+  body.angularVelocity.scale(0.25, body.angularVelocity);
+  body.wakeUp();
+  return true;
+}
+
+// A body whose centre has just passed the payout lip is not falling yet: edgeZ sits 0.05 behind
+// the bed's front face, so a coin still has 0.31 of deck under it and the chest 0.38, and either
+// one can balance on the lip corner - measured hangs of up to 51s, with the pile behind it dammed.
+// So the nudge is re-applied every frame until the body is genuinely under the bed rather than
+// once when it crosses. Clamping, not setting: it only ever adds the motion that is missing, so a
+// body already in free fall keeps its own arc and the repeat costs it nothing.
+export function nudgeOverLip(body) {
+  body.velocity.x = 0;
+  body.velocity.y = Math.min(body.velocity.y, -1.5);
+  body.velocity.z = Math.min(body.velocity.z, -3);
+  body.wakeUp();
+}
+
+// The rail coin is allowed to cross the tray at full speed. Only a hit on the far side wall gets
+// this response: absorb the horizontal motion and take the perfect wheel spin out of it, then add
+// a barely visible lean so gravity can lay it down instead of leaving it balanced on its edge.
+export function stopRailCoinAtWall(body) {
+  body.velocity.x = 0;
+  body.velocity.z = 0;
+  body.angularVelocity.setZero();
+
+  const lean = new CANNON.Quaternion();
+  lean.setFromAxisAngle(
+    new CANNON.Vec3(1, 0, 0),
+    Math.sign(body.position.x || 1) * 0.06,
+  );
+  body.quaternion.copy(lean.mult(body.quaternion));
+  body.aabbNeedsUpdate = true;
+  body.wakeUp();
+}
 
 // cannon-es creates one friction pair for every contact in a convex manifold and gives each pair
-// the full material friction budget. A flat 20-sided coin therefore receives roughly 20 copies of
-// the intended table friction. Its solver also clamps impulses per step, so the same material feels
+// the full material friction budget. A flat coin therefore receives roughly COIN_SEGMENTS copies
+// of the intended table friction. Its solver also clamps impulses per step, so the same material feels
 // twice as sticky at 120 Hz as at 60 Hz. frictionGravity is the supported force-scale override;
 // calibrating it by both the fixed step and the face contact count makes the public coefficients
 // behave like coefficients again and keeps low/high-power profiles consistent.
@@ -124,18 +190,33 @@ export function applyCoinTuning(body, tuning, resizeShape = false) {
 const COLUMN_PITCH = 0.78; // vs a 0.72 diameter, so 0.06 of slack per gap
 const ROW_PITCH = 0.80; // 0.08 of slack per gap
 const LOWER_ROW_PITCH = 0.75; // keeps force chains close while fitting the full lower band
-// A seeded front coin keeps roughly half a diameter of table ahead of its rim. The old 0.04 gap
-// put the front row at the tipping point, so the first normal stroke paid it out before the player
-// had added enough coins to complete a force chain.
-const LOWER_FRONT_GAP = 0.38;
-// Ends of the band on the lower bed that is clear of both the front lip and the retreated blade.
-const LOWER_SAFE_FRONT = GAME.playfieldFrontZ + COIN_RADIUS + LOWER_FRONT_GAP;
-const LOWER_SAFE_BACK = GAME.pusherOriginZ - GAME.pusherDepth / 2 - COIN_RADIUS - 0.04;
-const LOWER_ROWS = Math.round((LOWER_SAFE_BACK - LOWER_SAFE_FRONT) / LOWER_ROW_PITCH) + 1;
-// Leave a two-row receiving band in front of the blade. One empty row was still within direct
-// blade reach, so every idle stroke compressed the seeded rows and eventually paid them out.
-// Player drops now have to build the missing rear links before the blade can reach the front pile.
-const LOWER_SEED_ROWS = Math.max(1, LOWER_ROWS - 2);
+// A seeded front coin keeps roughly three quarters of a diameter of table ahead of its rim. The old
+// 0.04 gap put the front row at the tipping point, so the first normal stroke paid it out before the
+// player had added enough coins to complete a force chain.
+// 0.38 -> 0.53 moves with playfieldFrontZ, which went the same 0.15 the other way: the pile keeps
+// its position relative to the blade and the tray, and only the payout lip gets further from it.
+// That distance is what the load settle spends - the upper seed's top layer topples onto the pile
+// and shoves the front row about 0.7 forward before anything sleeps, and the longer stroke made
+// that shove harder. Sizing this against the creep rather than against taste is the point: the
+// front row is meant to settle near the lip, just not over it.
+const LOWER_FRONT_GAP = 0.53;
+// Ends of the band on the lower bed the blade never touches. The back end is the blade's forward
+// extreme, not its mid-stroke face: a coin is only genuinely out of reach when its back edge sits
+// forward of the furthest the blade ever travels. This used to measure from the mid-stroke face and
+// subtract two rows to compensate, which worked only for the stroke it was tuned against - the
+// deeper tray moved the extreme 0.2 forward and the rearmost seeded row landed inside blade reach,
+// so every idle stroke compressed the pile and the settle spilled a coin over the lip on its own.
+// Read at seed time, not at import time: the geometry panel moves both ends of this band.
+// The back end can be shoved in front of the front end by an extreme pair of settings, so it is
+// held open to a single row rather than inverted.
+function lowerSeedBand() {
+  const front = GAME.playfieldFrontZ + COIN_RADIUS + LOWER_FRONT_GAP;
+  const back = Math.max(
+    front,
+    GAME.pusherOriginZ - GAME.pusherAmplitude - GAME.pusherDepth / 2 - COIN_RADIUS - 0.04,
+  );
+  return { front, back, rows: Math.floor((back - front) / LOWER_ROW_PITCH) + 1 };
+}
 const LAYER_OFFSET = 0.03; // whole-layer nudge, cannot close a gap within a layer
 // Whole-row nudge. Free in X: two coins of different rows are already a row pitch apart in Z,
 // which beats the diameter on its own, so only the side walls bound this.
@@ -154,8 +235,11 @@ const SEED_MAX_X = GAME.playfieldHalfWidth - COIN_RADIUS - 0.06;
 const SEED_JITTER_X = LAYER_OFFSET + ROW_JITTER / 2 + COIN_JITTER_X / 2;
 const SEED_COLUMNS = Math.floor(((SEED_MAX_X - SEED_JITTER_X) * 2) / COLUMN_PITCH) + 1;
 const COLUMN_ORIGIN = -((SEED_COLUMNS - 1) / 2) * COLUMN_PITCH;
-// How many coins one layer of the lower pile holds - the width knob's visible consequence.
-export const LOWER_SLOTS_PER_LAYER = SEED_COLUMNS * LOWER_SEED_ROWS;
+// How many coins one layer of the lower pile holds - the width knob's visible consequence, and
+// the geometry panel's: a shortened bed holds fewer rows, and the seeder stacks the remainder.
+export function lowerSlotsPerLayer() {
+  return SEED_COLUMNS * lowerSeedBand().rows;
+}
 
 // The upper pile is ragged - gaps down in the body of it, a thinning crown on top. Filling every
 // lattice slot in order instead reads as brickwork. Slots are skipped by a seeded coin flip
@@ -182,11 +266,12 @@ function occupiedSlot(index, seed, channel, perLayer) {
 
 // Pick unique slots from one layer in a seed-dependent order. Ranking all 40 candidates is
 // cheap at reset time and, unlike vacancy-scanning, guarantees that an unlucky random seed can
-// never spill the lower bed into a second layer.
+// never spill the lower bed into a second layer for no reason. A bed shortened past the seed
+// count is the one reason: then the overflow stacks in whole layers, never on a taken slot.
 function singleLayerSlot(index, seed, channel, perLayer) {
   const slots = Array.from({ length: perLayer }, (_, slot) => slot);
   slots.sort((a, b) => seededNoise(a, channel, seed) - seededNoise(b, channel, seed) || a - b);
-  return slots[index];
+  return slots[index % perLayer];
 }
 
 // Layer spacing has to follow the tunable thickness, or a thicker coin seeds the pile already
@@ -247,10 +332,10 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
   }
 
   const columns = SEED_COLUMNS;
-  const rows = LOWER_SEED_ROWS;
+  const { front, back, rows } = lowerSeedBand();
   const perLayer = columns * rows;
   const slot = singleLayerSlot(index, seed, 19, perLayer);
-  const layer = 0;
+  const layer = Math.floor(index / perLayer);
   const row = Math.floor(slot / columns);
 
   return {
@@ -264,10 +349,9 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
     ),
     y: thickness / 2 + 0.02 + layer * layerPitch,
     z: clamp(
-      LOWER_SAFE_FRONT + row * LOWER_ROW_PITCH
-        + centeredNoise(index, 17, seed) * LOWER_COIN_JITTER_Z,
-      LOWER_SAFE_FRONT,
-      LOWER_SAFE_BACK,
+      front + row * LOWER_ROW_PITCH + centeredNoise(index, 17, seed) * LOWER_COIN_JITTER_Z,
+      front,
+      back,
     ),
   };
 }
