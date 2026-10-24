@@ -5,12 +5,12 @@ import { PALETTE } from '../src/game/config.js';
 // PALETTE and the CSS custom properties are two hand-maintained copies of the same design
 // tokens, and nothing at runtime touches both, so a drift is invisible until someone notices
 // the 3D scene and the UI are a slightly different teal. This is the only thing that catches it.
+// blue and purple are scene-only accent lights; the interface deliberately carries neither.
 const CSS_TOKEN_FOR = {
-  mint: '--teal-500',
-  mintSoft: '--teal-400',
+  mint: '--mint-500',
+  mintSoft: '--mint-400',
   gold: '--gold-400',
-  blue: '--blue-500',
-  purple: '--purple-500',
+  goldSoft: '--gold-200',
   white: '--text-strong',
   scene: '--ink-950',
 };

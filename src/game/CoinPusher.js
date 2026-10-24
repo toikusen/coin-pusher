@@ -1,7 +1,12 @@
 import * as THREE from 'three';
-import * as CANNON from 'cannon-es';
+import { clearPinsAround, pinLayout, simulateDrop } from './pachinko.js';
+import { initPhysics, physicsBuild, PhysicsWorld } from './world.js';
+import { boardThemeFor } from './themes/index.js';
+import { drawReelStrip, REEL_IMAGE_FILES, trimmedArt } from './themes/nocturneReels.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {
   GAME,
+  CABINET_BED_LENGTH,
   MACHINE_GEOMETRY_DEFAULTS,
   PALETTE,
   applyMachineGeometry,
@@ -9,11 +14,8 @@ import {
 } from './config.js';
 import {
   coinPhase,
+  coinFallPhase,
   gildTargets,
-  launcherReachFor,
-  launcherTargetFor,
-  launcherYawFor,
-  launcherXFor,
   quakeKick,
   rollSlotResult,
   slotWin,
@@ -21,7 +23,6 @@ import {
 import {
   COIN_HEIGHT,
   COIN_RADIUS,
-  CONTACT_SOLVER_OPTIONS,
   TUNING_DEFAULTS,
   applyCoinTuning,
   createCoinBody,
@@ -29,128 +30,327 @@ import {
   seedPosition,
   chestDropZ,
   nudgeOverLip,
+  onLowerBed,
+  buriedCoinIndex,
+  nextCoinCeiling,
+  lowerBladeZAt,
   settleChestOnLowerBed,
-  stopRailCoinAtWall,
-  syncFrictionGravity,
 } from './physics.js';
 
-// One pusher half-stroke, entered at full retreat (runPusherToFullRetreat): long enough for
-// the seeded stack to collapse and be squeezed forward once. Every step of it is simulated
-// before the first frame, so this is also the load-time cost of the opening pile - ~1.5 s on
-// a 2024 laptop, and cylinder-vs-cylinder narrowphase is the whole of it. Halving it halves
-// the cost and visibly puts the rows back, so it is a look/load knob, not free headroom.
-const PILE_SETTLE_SECONDS = Math.PI / GAME.pusherSpeed;
+// Six seconds of play before the first frame, entered at full retreat (runPusherToFullRetreat).
+// The three-layer seed keeps settling for a few strokes - a coin or two slides off the lip on
+// some piles - and all of that has to happen here, where settlePile discards it, rather than in
+// the player's first idle seconds. Measured over five pile seeds: idle payouts are 0 after 6 s,
+// 1-3 on some seeds after the old half-stroke. Rapier runs it in well under half a second.
+const PILE_SETTLE_SECONDS = 6;
 
 // How far off centre a chest may be dropped. playfieldHalfWidth less a whole chest width leaves
 // more than the tumbling box's own half-diagonal clear of the glass at any spawn yaw.
 const CHEST_DROP_HALF_WIDTH = GAME.playfieldHalfWidth - GAME.chestWidth;
 
-// The reel panel's ground, shared by the panel fill and the hole punched in the money bag.
-const REEL_GROUND = '#050b14';
 // The spinning strip is exactly the payable symbols - see GAME.slotIdleSymbol for why the idle
 // face is not one of them.
 const REEL_STRIP = GAME.slotOutcomes.map((outcome) => outcome.symbol);
-
-// ponytail: the bag is a canvas path, not a sprite - the panel is 384px wide at the top of the
-// shot, and an imported texture is one more asset to load and colour-match against the win glow.
-// Upgrade path: a symbol atlas if the slot ever gets a camera of its own.
-function drawMoneyBag(context, x, y, size, fill) {
-  const halfWidth = size * 0.4;
-  const neckY = y - size * 0.16;
-  const neckHalf = size * 0.15;
-  context.fillStyle = fill;
-  // Body: a teardrop hanging off the cinched neck, spreading at the base.
-  context.beginPath();
-  context.moveTo(x - neckHalf, neckY);
-  context.bezierCurveTo(x - halfWidth * 1.35, y + size * 0.06, x - halfWidth, y + size * 0.5, x, y + size * 0.5);
-  context.bezierCurveTo(x + halfWidth, y + size * 0.5, x + halfWidth * 1.35, y + size * 0.06, x + neckHalf, neckY);
-  context.closePath();
-  context.fill();
-  // Tie: the gathered cloth above the body, a trapezium because anything finer is mush at this size.
-  context.beginPath();
-  context.moveTo(x - neckHalf * 1.7, neckY - size * 0.22);
-  context.lineTo(x + neckHalf * 1.7, neckY - size * 0.22);
-  context.lineTo(x + neckHalf, neckY + size * 0.02);
-  context.lineTo(x - neckHalf, neckY + size * 0.02);
-  context.closePath();
-  context.fill();
-  // Punched in the panel's own ground, so the mark reads as a hole in the cloth, not an outline.
-  context.fillStyle = REEL_GROUND;
-  context.font = `bold ${Math.round(size * 0.44)}px system-ui, sans-serif`;
-  context.fillText('$', x, y + size * 0.2);
-}
-
-// A seismograph trace: flat, one tall spike, flat again. Reads as a tremor at panel size, where
-// a shaking-cabinet pictogram would be mush, and it shares nothing with the bag's silhouette.
-function drawQuake(context, x, y, size, fill) {
-  const step = size * 0.16;
-  context.strokeStyle = fill;
-  context.lineWidth = Math.max(4, size * 0.1);
-  context.lineJoin = 'round';
-  context.lineCap = 'round';
-  context.beginPath();
-  const trace = [
-    [-2.4, 0], [-1.6, 0], [-1.1, -1.5], [-0.5, 1.6],
-    [0.1, -2.2], [0.7, 1.2], [1.3, -0.8], [1.9, 0], [2.4, 0],
-  ];
-  trace.forEach(([offsetX, offsetY], index) => {
-    const pointX = x + offsetX * step;
-    const pointY = y + offsetY * step;
-    if (index === 0) context.moveTo(pointX, pointY);
-    else context.lineTo(pointX, pointY);
-  });
-  context.stroke();
-}
-
-// A coin with a sparkle punched out of it: the gild prize turns coins already on the machine to
-// gold, and a disc is the only silhouette on the strip that says "the coins themselves". Shares
-// nothing with the bag's teardrop or the quake's trace.
-function drawGildedCoin(context, x, y, size, fill) {
-  const radius = size * 0.38;
-  context.fillStyle = fill;
-  context.beginPath();
-  context.arc(x, y, radius, 0, Math.PI * 2);
-  context.fill();
-  // Punched in the panel's own ground, the same trick the bag's '$' uses - an outline at this size
-  // closes up into a blob.
-  context.fillStyle = REEL_GROUND;
-  const arm = radius * 0.78;
-  const waist = radius * 0.16;
-  context.beginPath();
-  context.moveTo(x, y - arm);
-  context.quadraticCurveTo(x + waist, y - waist, x + arm, y);
-  context.quadraticCurveTo(x + waist, y + waist, x, y + arm);
-  context.quadraticCurveTo(x - waist, y + waist, x - arm, y);
-  context.quadraticCurveTo(x - waist, y - waist, x, y - arm);
-  context.fill();
-}
-
-// Symbols that need more than a glyph. Anything absent is drawn as its own text, which is what
-// keeps '7' and any other plain character free.
-const REEL_PAINTERS = { bag: drawMoneyBag, quake: drawQuake, gild: drawGildedCoin };
 // Every part of the cabinet is cut from the playfield's half-width, so widening the machine is
 // one config change rather than thirty literals. Kept as offsets from the interior, not ratios:
 // a wider machine should get more playfield, not fatter trim.
 const INNER_X = GAME.playfieldHalfWidth;
 const BED_WIDTH = INNER_X * 2 + 0.15;
+// Vertical fov at or above FRAME_ASPECT. Fov is vertical in three.js, so a field narrower than that
+// would lose width off both sides - the bed's edges and the side rails - while gaining height it
+// has no use for. Below it the vertical fov opens instead, holding the horizontal fov that
+// FRAME_ASPECT gives, so the machine's full width always stays in frame and a tall field just
+// shows a little more above and below. The pair is FLAT_CAMERA's: 71 degrees at the Duo's 0.87
+// canvas is what seats the lip at the bottom with the slot's crown still in frame, and it holds
+// the horizontal fov the old 62 at 1.03 did (tan 35.5 * 0.87 = tan 31 * 1.03), so the bed's
+// width in frame is unchanged; a wider window just keeps the extra height.
+const CAMERA_FOV = 71;
+const FRAME_ASPECT = 0.87;
+
+// The camera rides the hinge. Lying flat the display is one plane and the flat pose is right; stood
+// up at 90 degrees the table lies on the lower half and the back wall rises on the upper, and the
+// fold pose puts the pusher shelf's back edge on the fold with the lip's corners filling the width
+// (at the Duo's ~0.87 canvas, the fold near mid-canvas). Angles between blend the two.
+// ponytail: the fold pose is for that one layout. Upgrade path: solve the pitch from the hinge rect.
+// The flat pose seats the lip at the frame's bottom now that no launcher stands in front of it:
+// within 0.2 of the edge on a portrait phone, flush at the desktop's 1.05.
+// Both pose for the tall pin board: lip near the frame's bottom with a margin under it, the slot's
+// crown just inside its top, the board's bottom edge near mid-frame. Flat is a player standing at
+// the machine (~10 degrees of pitch); stood up looks down ~25, so the half lying on the desk reads
+// more like a table seen from above, at the cost of a narrower bed.
+export const FLAT_CAMERA = { position: [0, 5.25, -7.5], target: [0, 4, 0] };
+// ~25 degrees. Solved with the board turned square to it (boardReclineFor) and the sill carried
+// onto the fold by poseCamera's view offset, so neither is a constraint on the pose itself - what
+// is: the lip low in the frame, the slot's crown under the HUD, and both held at every step of the
+// blend from FLAT_CAMERA (tests/camera.test.js). Searched together with FLAT_CAMERA, not on its own:
+// two poses that each framed the machine once cut the bed off part-way through the blend. The
+// coin tray under the lip fills the band below it - see chuteZ.
+export const FOLD_CAMERA = { fov: 66, position: [0, 12, -8.5], target: [0, 8, 0] };
+// The pin board coins fall through, standing over the drop zone. Coins exit at its bottom onto the
+// tray - the same z as ever, so every coin still lands on the moving tray - and its half-width is
+// the old landing spread, so pins scatter the drop without ever throwing it off the tray.
+// Both poses above were searched with this board: its bottom sits on the fold stood up, and the
+// slot's crown stays in frame lying flat.
+export const PIN_BOARD = Object.freeze({
+  halfWidth: GAME.launcherTravelHalfWidth,
+  // Up to the carriage's mouth, and a unit taller than it was so the slot rises into the empty band
+  // that sat between its crown and the HUD (see GAME.slotY and the camera poses, searched with it).
+  top: 8.1,
+  bottom: 1.6,
+  rows: 14,
+  // Open fall under the last row of pins. With the pins run to the sill, coins could only leave
+  // through the last row's gaps and the tray got a comb of landings with nothing under each pin;
+  // this much free fall lets a coin's sideways speed smear that out.
+  runout: 0.9,
+  pinRadius: 0.06,
+  coinRadius: COIN_RADIUS,
+  // Pop bumpers, after the round kickers on 塔塔冒險隊's board: they kick a slow coin away
+  // (pachinko.js), which is most of what makes the fall feel alive. Pins too close to one are
+  // cleared so a coin can always slip past - see clearPinsAround.
+  // Searched by simulation together with rows, runout and DROP_SWEEP for an even spread (4000
+  // drops): every fourteenth of the sill gets 5-9% of the coins, against 0-12% when every coin
+  // dropped from the centre, and each bumper is hit by ~30% of coins. From the centre the two top
+  // bumpers sat 1.6 off the drop line with a single unit to fall, and only ~2.5% ever reached them.
+  bumpers: Object.freeze([
+    { x: -1.6, y: 7.1, radius: 0.28 },
+    { x: 1.6, y: 7.1, radius: 0.28 },
+    { x: 0, y: 3, radius: 0.28 },
+  ]),
+});
+/** The board's pins: rows down to the runout, minus any too close to a bumper to pass. */
+export function boardPins() {
+  const pins = pinLayout({ ...PIN_BOARD, bottom: PIN_BOARD.bottom + PIN_BOARD.runout });
+  return clearPinsAround(pins, PIN_BOARD.bumpers, PIN_BOARD.coinRadius);
+}
+// How fast a hit pin or bumper's flash and swell fade, per second.
+const HIT_FADE = 5;
+// The carriage rides the slot's beam; coins leave it clear of the top row of pins.
+export const DROPPER_Y = GAME.slotY - 0.45;
+// The carriage's mouth: coins meet the first row of pins as soon as they leave it.
+const DROP_START_Y = PIN_BOARD.top;
+// The mouth's shuttle sweeps the beam and drops each coin wherever it is, so every lane and both
+// top bumpers are fed. A triangle wave rather than a sine: a sine lingers at the ends and piles
+// coins against the walls. The period is kept off any multiple of GAME.autoInterval, or auto-play
+// would drop on the same few spots every pass.
+const DROP_SWEEP = 2.8;
+const DROP_SWEEP_PERIOD = 3.1;
+// The shuttle shows the next coin standing in its cell. After a drop the cell's floor shuts by
+// 0.3s (themes/nocturne.js), then the next coin is minted into the seat: a mint flash and a short
+// settle, inside the cell rather than slid in from above, where the crown's centre gap would show
+// it appearing from nothing. Done well inside GAME.autoInterval.
+const COIN_REFILL_DELAY = 0.3;
+const COIN_REFILL_TIME = 0.2;
+// Standing on edge in the board's plane - the pose updateLaunching plays the fall back in.
+/**
+ * The waiting coin's refill at `since` seconds after the cell's last drop.
+ * @param {number} since Seconds since the drop (Infinity before the first one).
+ * @returns {{visible: boolean, lift: number, scale: number, flash: number}} lift is above the seat.
+ */
+export function refillPose(since) {
+  const t = (since - COIN_REFILL_DELAY) / COIN_REFILL_TIME;
+  // Eases down the last 0.12 into the seat and grows from 0.7 as it is minted.
+  const settle = Math.min(1, Math.max(0, t));
+  return {
+    visible: t >= 0,
+    lift: 0.12 * (1 - settle) ** 2,
+    scale: 0.7 + 0.3 * settle,
+    flash: t >= 0 && t < 1.5 ? 0.9 * (1 - t / 1.5) : 0,
+  };
+}
+const COIN_UPRIGHT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+
+/**
+ * Where the shuttle stands at time t: a triangle wave across +-DROP_SWEEP, at 0 when t is 0.
+ * @param {number} t Seconds on the game clock.
+ * @returns {number} Board x.
+ */
+export function dropXAt(t) {
+  const phase = (((t / DROP_SWEEP_PERIOD) + 0.25) % 1 + 1) % 1;
+  return DROP_SWEEP * (1 - 4 * Math.abs(phase - 0.5));
+}
+
+// The board's pivot - its mint sill.
+const BOARD_PIVOT = new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1);
+
+/**
+ * The board's recline, in radians, that lays it parallel to the screen: the camera's own pitch,
+ * read from its forward direction. A plane parallel to the image plane projects with no
+ * perspective at all - an exact rectangle, as if printed on the upper half of the display - which
+ * is what the stood-up half should show. Aiming it at the camera instead still left a 3% keystone.
+ * Coins fall in the board's own plane (pachinko.js), so leaning it back changes nothing about
+ * where they go, and the sill it turns about stays on the fold.
+ */
+export function boardReclineFor(cameraForward) {
+  return Math.max(0, Math.asin(THREE.MathUtils.clamp(-cameraForward.y, -1, 1)));
+}
+
+/**
+ * Whether the machine is paused because the phone is nearly shut: below 60 degrees it closes,
+ * above 65 it opens again, and between the two it stays as it was so a hinge resting on the
+ * threshold does not flicker it. A missing reading counts as open.
+ */
+export function closedFor(wasClosed, hingeDegrees) {
+  if (!Number.isFinite(hingeDegrees)) return false;
+  if (hingeDegrees < 60) return true;
+  if (hingeDegrees > 65) return false;
+  return Boolean(wasClosed);
+}
+
+/**
+ * How stood up the display is, 0 lying flat to 1 at a right angle or tighter, from the hinge angle
+ * in degrees. Smoothstepped, so the camera eases into both ends instead of arriving at them at full
+ * speed - a straight ramp reads as a hard stop when the hinge reaches 90.
+ */
+export function foldFor(hingeDegrees) {
+  if (!Number.isFinite(hingeDegrees)) return 0;
+  return THREE.MathUtils.smoothstep((180 - hingeDegrees) / 90, 0, 1);
+}
+
+// The pin board's mint sill, which the stood-up view puts on the fold (see buildDropper).
+const SILL_HEIGHT = PIN_BOARD.bottom - 0.1;
+
+/**
+ * Vertical view offset, in canvas pixels, that carries the sill from sillNdc (where the camera puts
+ * it, in canvas NDC) onto the fold, foldY pixels below the canvas top.
+ */
+export function foldShiftFor(foldY, canvasHeight, sillNdc) {
+  const foldNdc = 1 - (2 * foldY) / canvasHeight;
+  return ((foldNdc - sillNdc) * canvasHeight) / 2;
+}
+
+// The balustrade lamps (cabinet.glb fence_lamp_<bay>_<side>, bay 1 nearest the player): resting
+// level, and which bay is lit at a time - one per FENCE_LAMP_STEP, front to back, the board's
+// marquee beat (themes/nocturne.js).
+const FENCE_LAMP_IDLE = 0.25;
+const FENCE_LAMP_BAYS = 6;
+const FENCE_LAMP_STEP = 0.45;
+
+/** The bay (1 at the player's end) whose lamps are lit at `time` seconds. */
+export function fenceLampLit(time) {
+  return (Math.floor(time / FENCE_LAMP_STEP) % FENCE_LAMP_BAYS) + 1;
+}
+
+// The reel drums' faces, in order round each drum, and the angle between neighbours. The idle '?'
+// rides the drum too, so a machine that has not paid shows it rather than a blank.
+const DRUM_FACES = ['7', 'bag', 'quake', 'gild', '?'];
+const DRUM_STEP = (Math.PI * 2) / DRUM_FACES.length;
+// Calibrated by eye against the rendered drums: which way the cells are turned on the texture,
+// and which way round the drum turns, so symbols stand upright and roll down past the window.
+const DRUM_TEXTURE_TURN = Math.PI / 2;
+const DRUM_DIRECTION = 1;
+
+/** The drum angle, radians, that shows `face` square in the window. */
+export function drumAngleFor(face) {
+  const index = Math.max(0, DRUM_FACES.indexOf(face));
+  return (index + 0.5) * DRUM_STEP;
+}
+
+/**
+ * A drum's angle `elapsed` seconds into a spin: it runs at `speed` from `start`, and over the last
+ * `settle` seconds before `lockAt` eases onto `target` - the first equivalent of it far enough
+ * ahead to keep rolling forward - overshooting a touch and settling back like a real reel.
+ */
+export function drumAngleAt({ start, target, elapsed, lockAt, speed = 9, settle = 0.65 }) {
+  const settleFrom = Math.max(0, lockAt - settle);
+  if (elapsed <= settleFrom) return start + speed * elapsed;
+  const from = start + speed * settleFrom;
+  const turn = Math.PI * 2;
+  const end = target + turn * Math.ceil((from + turn / 3 - target) / turn);
+  if (elapsed >= lockAt) return end;
+  const t = (elapsed - settleFrom) / (lockAt - settleFrom) - 1;
+  // A small overshoot, a real reel's brake catching it; more read as bouncing back.
+  const back = 0.3;
+  return from + (end - from) * (1 + (back + 1) * t ** 3 + back * t ** 2);
+}
+
+// Frames slower than this, sustained for ADAPT_SECONDS, step the render quality down.
+const ADAPT_FRAME = 1 / 45;
+const ADAPT_SECONDS = 2;
+// Physics a settle slice may run before yielding a frame - most of a 60 Hz frame.
+const SETTLE_SLICE_MS = 12;
+const nextFrame = () => new Promise((resolve) => { requestAnimationFrame(resolve); });
+const TRIM_INTERVAL = 0.25;
+
+/**
+ * The running count of slow time behind adaptQuality: grows by slow frames, resets on a fast one,
+ * and calls for one step down once it reaches ADAPT_SECONDS (then starts over).
+ */
+/**
+ * Catch-up steps a frame may run, from the last frame's mean step time: one once a step eats most
+ * of a frame, back to the profile's count only when there is clear room again. The gap between
+ * 10 and 6 ms is the hysteresis - restoring on one cheap frame let the next catch-up spike in.
+ */
+export function nextMaxSubSteps(current, stepMs, normal) {
+  if (stepMs > 10) return 1;
+  if (stepMs < 6) return normal;
+  return current;
+}
+
+export function adaptiveStepFor(slowFor, frameDelta) {
+  if (frameDelta <= ADAPT_FRAME) return { slowFor: 0, stepDown: false };
+  const next = slowFor + frameDelta;
+  return next >= ADAPT_SECONDS ? { slowFor: 0, stepDown: true } : { slowFor: next, stepDown: false };
+}
+
+/** A drop path's pose at time t, linearly between its samples; past the end it holds the last. */
+export function pathAt(path, t, next = path.findIndex((sample) => sample.t >= t)) {
+  if (next < 0 || next >= path.length) return path[path.length - 1];
+  if (next === 0) return path[0];
+  const from = path[next - 1];
+  const to = path[next];
+  const k = (t - from.t) / (to.t - from.t);
+  return {
+    t,
+    x: from.x + (to.x - from.x) * k,
+    y: from.y + (to.y - from.y) * k,
+    angle: from.angle + (to.angle - from.angle) * k,
+  };
+}
+
+/**
+ * pathAt's lookup resumed from where the last frame left it: the first index at or after `from`
+ * whose sample is at or past t. Only valid while t never goes backwards, which a shot's clock doesn't.
+ */
+export function pathCursor(path, t, from = 0) {
+  let index = from;
+  while (index < path.length && path[index].t < t) index += 1;
+  return index;
+}
+
+/** Vertical fov, in degrees, that keeps the machine's width in frame at this aspect. */
+export function fovForAspect(aspect) {
+  if (!(aspect > 0) || aspect >= FRAME_ASPECT) return CAMERA_FOV;
+  const halfHeight = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2)) * (FRAME_ASPECT / aspect);
+  return THREE.MathUtils.radToDeg(2 * Math.atan(halfHeight));
+}
 // World units per tile of public/textures/deck_plate.jpg. The tile is two plates across, so a
 // plate is two units - about three coin diameters.
 const DECK_PLATE_TILE = 4;
 // How much the plate art is darkened, 0..1.
 const DECK_PLATE_SHADE = 0.3;
+// Where a horizontal seam falls in the plate art, as a fraction of the tile (315 of 1254 px).
+const DECK_PLATE_SEAM = 0.25;
+// Colour multiplied over the plate art on the scraper's upright face.
+const DECK_PLATE_SCRAPER_TINT = 0xd0d0d0;
 // Colour multiplied over the plate art on the tray inlays. Grey, not glassTint - see inlaySurface.
 const DECK_PLATE_INLAY_TINT = 0xffffff;
 // The payout chute hangs off the front lip, so it travels with playfieldFrontZ - which the
 // geometry panel moves, so this is read per placement rather than captured at import.
-const chuteZ = () => GAME.playfieldFrontZ - 1.6;
+// It is also the coin tray the stood-up view shows under the lip: with the pin board's sill on the
+// fold, the bed cannot reach the bottom of the frame, and this fills that band instead of black.
+// Sized for FOLD_CAMERA: its back wall's top lands near -0.71 and its front near -0.96. Back edge
+// tucked 0.1 under the lip so a coin coming off the bed falls straight in.
+const chuteZ = () => GAME.playfieldFrontZ - 1.1;
+const FRONT_TRIM_HEIGHT = 0.12;
+const FRONT_TRIM_DEPTH = 0.04;
+const frontTrimZ = () => GAME.playfieldFrontZ - 0.002 + FRONT_TRIM_DEPTH / 2;
+const CHUTE_FLOOR_Y = -1.6; // top face; under trayY (-1.4), so a coin resting here has scored
+const CHUTE_WALL_TOP = -1.0;
 // Trim finish. On a machine made of painted metal an emissive strip is the one thing that cannot
 // be a real object, so the gold reads as polished brass instead: same colour, same job marking an
 // edge, but lit by the room rather than glowing on its own.
 const BRASS = Object.freeze({ roughness: 0.26, metalness: 0.92, envMapIntensity: 0.9 });
-const SETTLE_SOLVER_ITERATIONS = 12;
-// Yaw angles measureLauncherClip checks the launcher's silhouette at. Five is enough for a shape
-// this simple - the samples only have to bracket where the widest point crosses the frame's edge.
-const FAN_SAMPLES = [-2, -1, 0, 1, 2].map((step) => (step / 2) * (GAME.launcherFanDegrees * Math.PI) / 180);
+const SETTLE_SOLVER_ITERATIONS = 4;
 
 export class CoinPusher {
   constructor(canvas, quality, callbacks = {}) {
@@ -162,17 +362,15 @@ export class CoinPusher {
     this.activeCoins = [];
     this.coinPool = [];
     this.createdCoins = 0;
-    this.recycleDelay = 0.38;
+    // Long enough for paid coins to visibly gather in the tray under the lip before they go.
+    this.recycleDelay = 4;
     this.frameId = 0;
     this.cleanup = [];
     this.launching = [];
-    this.launcherAim = 0;
-    this.launcherX = 0;
-    // How far off centre the launcher may sit. Starts at the rail's full half-width and shrinks
-    // to whatever the current window frames - see updateLauncherReach.
-    this.launcherReach = GAME.launcherTravelHalfWidth;
-    this.launcherClip = null;
-    this.pinHover = 1.02;
+    // 0 lying flat, 1 stood up at 90 degrees or less - see setHingeAngle. fold eases towards
+    // foldTarget so a coarse hinge reading glides rather than jumps.
+    this.fold = 0;
+    this.foldTarget = 0;
     // Mechanical surfaces re-skinned when a cabinet shell loads: the tray, its inlay, the blade,
     // the scraper and the rear deck. Their own materials are tuned for the procedural machine -
     // the scraper's gold emissive in particular only reads as a lit guard against procedural
@@ -211,6 +409,7 @@ export class CoinPusher {
   async init() {
     this.setupRenderer();
     const environmentReady = this.setupScene();
+    await initPhysics();
     this.setupPhysics();
     await Promise.all([
       environmentReady,
@@ -221,11 +420,12 @@ export class CoinPusher {
     await this.loadCabinet();
     // After loadCabinet: the slot machine sits on the cabinet's crown, whose height it measures.
     this.buildBonusStage();
+    // The slot crowns the board, so it reclines with it. attach() keeps the world pose it was built in.
+    for (const part of [this.slotMesh, this.reelPanel]) if (part) this.boardInner.attach(part);
     await this.setupBloom();
     this.setupParticles();
-    this.bindPointer();
     this.bindResize();
-    this.resetPile();
+    await this.resetPile();
     this.timer = new THREE.Timer();
     this.timer.connect(document);
     return this;
@@ -266,24 +466,16 @@ export class CoinPusher {
     scene.fog = new THREE.Fog(PALETTE.fog, 17, 42);
     this.scene = scene;
 
-    // First person: the player stands at the cabinet instead of looking down on it. 27° of pitch at
-    // a 9.4 standoff, down from 39° at 10.4, and the fov opens 56 -> 62 to hold the bed's share of
-    // the width at the shorter distance. What puts a floor under the pitch is the launcher, not the
-    // bed: it hangs in front of the machine, so a flatter camera slides it behind the cabinet's
-    // front panel, and by about 20° it is under the frame's bottom edge entirely.
-    // Two things this framing gives up on purpose. The marquee was already fully cropped at 39° and
-    // stays cropped - the cabinet fit is keyed to the bed, so widening the machine scaled the model
-    // up and took the sign out of frame. And the pitch now clears the machine's rear, so the hall
-    // backdrop shows through the playfield's back opening; it reads as a lit backglass, which is
-    // why addHall's height and sink still work unchanged. Anything flatter starts showing the
-    // painted floor below the hall's horizon and does need the hall re-derived.
-    // Fov is vertical, so the pitch margins hold at any window shape; only the bed's share of the
-    // width moves with aspect, and a tall narrow window is what runs out of room first.
-    const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 100);
-    camera.position.set(0, 5.4, -9.4);
-    camera.lookAt(0, 0.4, 0.6);
+    // First person: the player stands at the cabinet instead of looking down on it. The pose follows
+    // the hinge, between FLAT_CAMERA and FOLD_CAMERA - see poseCamera. The pitch clears the
+    // machine's rear, so the hall backdrop shows through the playfield's back opening as a lit
+    // backglass. Fov is vertical, so only the bed's share of the width moves with aspect, and a
+    // tall narrow window is what runs out of room first.
+    const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
+    camera.position.set(...FLAT_CAMERA.position);
+    camera.lookAt(...FLAT_CAMERA.target);
     this.camera = camera;
-    // The camera never moves in play, so an earthquake can shake it and put it back here.
+    // Where the camera rests, so an earthquake can shake it and put it back. poseCamera moves it.
     this.cameraBase = camera.position.clone();
 
     scene.add(new THREE.HemisphereLight(PALETTE.white, PALETTE.shell, 1.35));
@@ -313,8 +505,11 @@ export class CoinPusher {
     const rimAccent = new THREE.PointLight(PALETTE.blue, 3.2, 6.5);
     rimAccent.position.set(0, 4.2, 5.2);
     scene.add(rimAccent);
+    // x 7, outside the cabinet's width: this camera sees a point light mirrored in the bed at
+    // x * 5.4 / (5.4 + 2.6), which from x 5.4 was 3.65 - a hard white spot halfway up the bed.
+    // From 7 it lands at 4.73, inside the side wall.
     const purpleAccent = new THREE.PointLight(PALETTE.goldSoft, 1.4, 16);
-    purpleAccent.position.set(5.4, 2.6, 3);
+    purpleAccent.position.set(7, 2.6, 3);
     scene.add(purpleAccent);
 
     return this.loadCoinEnvironment();
@@ -388,49 +583,17 @@ export class CoinPusher {
   }
 
   setupPhysics() {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, -this.tuning.tilt), allowSleep: true });
-    world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = this.tuning.solverIterations;
-    syncFrictionGravity(world, this.quality.physicsStep);
-
-    // Every contact in the machine involves a coin, so all three pairs below are registered
-    // explicitly and defaultContactMaterial is never consulted. Tune stiffness here, on the
-    // ContactMaterials, or the change silently does nothing. Kept as fields because
-    // setPhysics writes their friction live - narrowphase re-reads it every step.
-    this.groundMaterial = new CANNON.Material('ground');
-    this.pusherMaterial = new CANNON.Material('pusher');
-    this.coinPhysicsMaterial = new CANNON.Material('coin');
-    // The chest is the one body in the machine that is not a coin, and it cannot share the coin's
-    // friction - see GAME.chestFrictionScale for why a box on the coin material slides.
-    this.chestMaterial = new CANNON.Material('chest');
-    this.contacts = {
-      ground: new CANNON.ContactMaterial(this.coinPhysicsMaterial, this.groundMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.groundFriction,
-      }),
-      coin: new CANNON.ContactMaterial(this.coinPhysicsMaterial, this.coinPhysicsMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.coinFriction,
-      }),
-      pusher: new CANNON.ContactMaterial(this.coinPhysicsMaterial, this.pusherMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.pusherFriction,
-      }),
-      chestGround: new CANNON.ContactMaterial(this.chestMaterial, this.groundMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.groundFriction * GAME.chestFrictionScale,
-      }),
-      chestCoin: new CANNON.ContactMaterial(this.chestMaterial, this.coinPhysicsMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.coinFriction * GAME.chestFrictionScale,
-      }),
-      chestPusher: new CANNON.ContactMaterial(this.chestMaterial, this.pusherMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: this.tuning.pusherFriction * GAME.chestFrictionScale,
-      }),
-    };
-    Object.values(this.contacts).forEach((contact) => world.addContactMaterial(contact));
-    this.world = world;
+    // Six friction pairs - coin against the bed, other coins and the pusher, and the chest against
+    // the same three at GAME.chestFrictionScale times the grip - all derived per collider from the
+    // tuning (world.js frictionFor), so setPhysics re-derives them live.
+    this.world = new PhysicsWorld({
+      gravity: { x: 0, y: -24, z: -this.tuning.tilt },
+      fixedStep: this.quality.physicsStep,
+      maxSubSteps: this.quality.physicsMaxSubSteps,
+      iterations: this.tuning.solverIterations,
+      tuning: this.tuning,
+      chestScale: GAME.chestFrictionScale,
+    });
   }
 
   // Live tuning. Everything but thickness lands on the running world; thickness resizes every
@@ -439,17 +602,12 @@ export class CoinPusher {
   setPhysics(patch) {
     Object.assign(this.tuning, patch);
     const resizeShape = Object.hasOwn(patch, 'thickness');
-    this.world.gravity.z = -this.tuning.tilt;
-    syncFrictionGravity(this.world, this.quality.physicsStep);
-    this.world.solver.iterations = this.tuning.solverIterations;
-    this.contacts.ground.friction = this.tuning.groundFriction;
-    this.contacts.coin.friction = this.tuning.coinFriction;
-    this.contacts.pusher.friction = this.tuning.pusherFriction;
-    this.contacts.chestGround.friction = this.tuning.groundFriction * GAME.chestFrictionScale;
-    this.contacts.chestCoin.friction = this.tuning.coinFriction * GAME.chestFrictionScale;
-    this.contacts.chestPusher.friction = this.tuning.pusherFriction * GAME.chestFrictionScale;
+    this.world.setGravity({ x: 0, y: -24, z: -this.tuning.tilt });
+    this.world.setIterations(this.tuning.solverIterations);
+    this.world.setFriction(this.tuning);
     const scaleY = this.tuning.thickness / COIN_HEIGHT;
-    for (const coin of [...this.activeCoins, ...this.coinPool]) {
+    // In-flight coins too: resetPile returns them to the pool, and an untuned one would be reused.
+    for (const coin of [...this.activeCoins, ...this.coinPool, ...this.launching.map((shot) => shot.coin)]) {
       applyCoinTuning(coin.body, this.tuning, resizeShape);
       coin.mesh.scale.y = scaleY;
     }
@@ -464,16 +622,13 @@ export class CoinPusher {
       console.warn(`[${label}] GLB unavailable.`, error);
       return null;
     });
-    const [model, hallTexture, launcherModel, chestModel, slotModel, deckPlate] = await Promise.all([
-      new GLTFLoader().loadAsync('/models/coin.glb'),
-      new THREE.TextureLoader().loadAsync('/backdrop/hall.jpg'),
-      // The game remains playable if an asset CDN or a stale deployment omitted the optional
-      // launcher. buildLauncher() falls back to the procedural barrel below.
-      optional('/models/launcher.glb', 'launcher'),
-      optional('/models/chest_tripo.glb', 'chest'),
-      optional('/models/slot_tripo.glb', 'slot'),
+    const [model, hallTexture, chestModel, slotModel, deckPlate] = await Promise.all([
+      new GLTFLoader().loadAsync('models/coin.glb'),
+      new THREE.TextureLoader().loadAsync('backdrop/hall.jpg'),
+      optional('models/chest_tripo.glb', 'chest'),
+      optional('models/slot_tripo.glb', 'slot'),
       // The bed's plate art. Missing, the bed falls back to its drawn grid.
-      new THREE.ImageLoader().loadAsync('/textures/deck_plate.jpg').catch((error) => {
+      new THREE.ImageLoader().loadAsync('textures/deck_plate.jpg').catch((error) => {
         console.warn('[deck] plate texture unavailable.', error);
         return null;
       }),
@@ -481,7 +636,6 @@ export class CoinPusher {
     this.deckPlate = deckPlate;
     hallTexture.colorSpace = THREE.SRGBColorSpace;
     this.hallTexture = hallTexture;
-    this.launcherModelSource = launcherModel?.scene ?? null;
     this.chestModelSource = chestModel?.scene ?? null;
     this.slotModelSource = slotModel?.scene ?? null;
     const sourceMeshes = [];
@@ -541,6 +695,11 @@ export class CoinPusher {
     premium.emissiveIntensity = 0.18;
     premium.needsUpdate = true;
     this.coinMaterials = { regular, premium };
+    // Every coin is drawn by one of two instanced meshes, one per material: a few hundred coins
+    // as a few hundred meshes was a few hundred draw calls, twice over with shadows. A coin keeps
+    // an Object3D as its transform (see makeCoin) and syncCoinInstances copies those in per frame.
+    this.coinBatches = {};
+    for (const name of Object.keys(this.coinMaterials)) this.growCoinBatch(name, 256);
 
     sourceMeshes.forEach((mesh) => {
       mesh.geometry.dispose();
@@ -867,88 +1026,6 @@ export class CoinPusher {
     return art;
   }
 
-  // A gantry for the slot machine, which otherwise hangs in mid-air over the front of the machine.
-  // Built here rather than in build_cabinet.py because the slot is fixed in world space and the
-  // cabinet is not: the geometry panel slides and stretches the cabinet along z, and at its short
-  // settings the side walls end well behind z -4, so posts standing on them would stand on nothing.
-  // These stand on the hall floor instead, at x +-5, which at the slot's depth is outside the frame
-  // (about +-2.8 visible there) - what the player sees is the beam the machine sits on, spanning
-  // the shot. The beam is far above every sight line to the bed and tray (those cross z -4 under
-  // y 3.4) and nowhere near the coin rain or chest drop, both over the upper tray. No shadows, for
-  // the same reason as the slot itself.
-  mountSlot(slot) {
-    const FLOOR_Y = -2.78;
-    const BEAM = { width: 10.4, height: 0.16, depth: 0.4 };
-    const POST_X = 5.0;
-    const body = new THREE.MeshStandardMaterial({
-      color: PALETTE.shellRaised,
-      metalness: 0.6,
-      roughness: 0.35,
-      envMap: this.environmentTexture,
-      envMapIntensity: 0.55,
-    });
-    const trim = new THREE.MeshStandardMaterial({
-      color: PALETTE.gold,
-      metalness: 0.9,
-      roughness: 0.3,
-      emissive: PALETTE.gold,
-      emissiveIntensity: 0.35,
-      envMap: this.environmentTexture,
-      envMapIntensity: 0.55,
-    });
-    const part = (material, width, height, depth, x, y, z) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
-      mesh.position.set(x, y, z);
-      slot.add(mesh);
-    };
-    // Group-local: y is height above slotY, the slot's own base.
-    part(body, BEAM.width, BEAM.height, BEAM.depth, 0, -BEAM.height / 2, 0);
-    // The thin gold horizontal is the backdrop's language for a structural line.
-    part(trim, BEAM.width, 0.03, 0.01, 0, -BEAM.height / 2, -BEAM.depth / 2 - 0.005);
-    const postHeight = GAME.slotY - FLOOR_Y;
-    for (const x of [-POST_X, POST_X]) part(body, 0.3, postHeight, 0.3, x, -postHeight / 2, 0);
-  }
-
-  // Gold panel frames across the scraper's face, the same motif build_cabinet.py puts on the side
-  // walls. The scraper is a plain board in the middle of the shot, and a flat texture on a surface
-  // seen this dark reads as nothing; thin lit relief does. Children of the scraper, so they follow
-  // it when the geometry panel moves scraperZ. Visual only: they stand FRAME_PROUD in front of the
-  // collider's face, a coin's sliver, so a coin pressed against the board overlaps them invisibly.
-  frameScraper(width, height, depth) {
-    const PANELS = 4;
-    const MARGIN = 0.15;
-    const GAP = 0.12;
-    const BAR = 0.03;
-    const FRAME_PROUD = 0.015;
-    // Local y: from just above the brass strip (world 0.77) to just under the top edge.
-    const bottom = 0.77 + 0.08 - this.scraper.position.y;
-    const top = height / 2 - 0.12;
-    const panelWidth = (width - 2 * MARGIN - (PANELS - 1) * GAP) / PANELS;
-    const material = new THREE.MeshStandardMaterial({
-      color: PALETTE.gold,
-      metalness: 0.9,
-      roughness: 0.3,
-      emissive: PALETTE.gold,
-      emissiveIntensity: 0.3,
-      envMap: this.environmentTexture,
-      envMapIntensity: 0.55,
-    });
-    const z = -depth / 2 - FRAME_PROUD / 2;
-    const bar = (w, h, x, y) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, FRAME_PROUD), material);
-      mesh.position.set(x, y, z);
-      this.scraper.add(mesh);
-    };
-    for (let index = 0; index < PANELS; index += 1) {
-      const left = -width / 2 + MARGIN + index * (panelWidth + GAP);
-      const centre = left + panelWidth / 2;
-      bar(panelWidth, BAR, centre, bottom + BAR / 2);
-      bar(panelWidth, BAR, centre, top - BAR / 2);
-      bar(BAR, top - bottom, left + BAR / 2, (top + bottom) / 2);
-      bar(BAR, top - bottom, left + panelWidth - BAR / 2, (top + bottom) / 2);
-    }
-  }
-
   // The tray inlays' surface: plate art where it loaded, the drawn deck grid where it did not.
   // White under the art, because glassTint multiplied into an already-teal image crushes it; the
   // art is painted in that family, so the upper tier keeps its tint either way.
@@ -1021,15 +1098,13 @@ export class CoinPusher {
       const collisionWidth = options.collisionWidth ?? width;
       const collisionHeight = options.collisionHeight ?? height;
       const collisionDepth = options.collisionDepth ?? depth;
-      const body = new CANNON.Body({ mass: 0, material: this.groundMaterial });
-      body.collisionRole = options.collisionRole ?? null;
-      body.addShape(new CANNON.Box(new CANNON.Vec3(collisionWidth / 2, collisionHeight / 2, collisionDepth / 2)));
-      body.position.set(
-        options.collisionX ?? x,
-        options.collisionY ?? y,
-        options.collisionZ ?? z,
-      );
-      this.world.addBody(body);
+      const half = { x: collisionWidth / 2, y: collisionHeight / 2, z: collisionDepth / 2 };
+      const body = this.world.addStaticBox(half, {
+        x: options.collisionX ?? x,
+        y: options.collisionY ?? y,
+        z: options.collisionZ ?? z,
+      });
+      mesh.userData.collisionHalf = half;
       // layoutGeometry() moves these again when a geometry slider does; it needs the collider and
       // the offsets it was built with, and nothing else keeps a static body reachable.
       mesh.userData.body = body;
@@ -1041,9 +1116,9 @@ export class CoinPusher {
 
   // The fixed rear deck reaches from the moving tray's back edge at full extension to the back
   // panel, and a long tray on a short bed reaches the panel on its own - leaving this nothing to
-  // cover, or less than nothing. It stays a real box at a sliver's depth either way: cannon-es
-  // accepts a negative half extent without complaint and turns the box inside out, so coins fall
-  // straight through it, and the mesh is hidden so the sliver is not a bright seam under the tray.
+  // cover, or less than nothing. It stays a real box at a sliver's depth either way - a negative
+  // half extent would turn the box inside out and let coins fall straight through it - and the
+  // mesh is hidden so the sliver is not a bright seam under the tray.
   static rearDeckSpan() {
     const front = GAME.pusherOriginZ - GAME.pusherAmplitude
       + GAME.pusherDepth / 2 + GAME.pusherRearExtension - 0.15;
@@ -1066,13 +1141,10 @@ export class CoinPusher {
     if (depth && built) mesh.scale.z = stretch;
     const body = mesh.userData.body;
     if (!body) return;
-    body.position.z = z + mesh.userData.collisionZOffset;
+    body.setPose({ ...body.position, z: z + mesh.userData.collisionZOffset });
     if (depth && built) {
-      body.shapes[0].halfExtents.z = mesh.userData.collisionHalfZ * stretch;
-      body.shapes[0].updateConvexPolyhedronRepresentation();
-      body.updateBoundingRadius();
+      body.collider.setHalfExtents({ ...mesh.userData.collisionHalf, z: mesh.userData.collisionHalfZ * stretch });
     }
-    body.aabbNeedsUpdate = true;
   }
 
   // Re-place every part the geometry panel owns, from whatever GAME currently holds. Called once
@@ -1086,7 +1158,7 @@ export class CoinPusher {
 
     this.placeBox(this.bed, centre, depth);
     this.placeBox(this.backPanel, back + 0.05);
-    this.placeBox(this.frontTrim, front - 0.02);
+    this.placeBox(this.frontTrim, frontTrimZ());
     for (const glass of this.glassPanes) this.placeBox(glass, centre, depth + 0.2);
     for (const bar of this.neonBars) this.placeBox(bar, centre, depth + 0.2);
     for (const { mesh, offset } of this.chuteParts) this.placeBox(mesh, chuteZ() + offset);
@@ -1101,7 +1173,7 @@ export class CoinPusher {
     // the length the model was hand-fitted against.
     if (this.cabinet) {
       this.cabinet.position.z = centre;
-      this.cabinet.scale.z = depth / MACHINE_GEOMETRY_DEFAULTS.lowerLength;
+      this.cabinet.scale.z = depth / CABINET_BED_LENGTH;
     }
 
     // Moving deck: the blade end is fixed to the centre, the rear tail carries the length.
@@ -1109,11 +1181,8 @@ export class CoinPusher {
     const deckCentre = GAME.pusherRearExtension / 2;
     for (const { mesh, inset } of this.trayParts) this.placeBox(mesh, deckCentre, deckDepth - inset);
     if (this.pusherDeckShape) {
-      this.pusherDeckShape.halfExtents.z = deckDepth / 2;
-      this.pusherDeckShape.updateConvexPolyhedronRepresentation();
-      this.pusherBody.shapeOffsets[0].z = deckCentre;
-      this.pusherBody.updateBoundingRadius();
-      this.pusherBody.aabbNeedsUpdate = true;
+      this.pusherDeckShape.setHalfExtents({ ...this.pusherDeckShape.halfExtents(), z: deckDepth / 2 });
+      this.pusherDeckShape.setTranslationWrtParent({ x: 0, y: GAME.upperTrayY, z: deckCentre });
     }
 
     const rear = CoinPusher.rearDeckSpan();
@@ -1124,7 +1193,6 @@ export class CoinPusher {
 
     this.placeBox(this.scraper, GAME.scraperZ);
     this.placeBox(this.scraperStrip, GAME.scraperZ - 0.02);
-    this.updateLauncherVisuals();
   }
 
   // The geometry panel's commit. Everything lands at once - meshes, colliders and the payout
@@ -1268,7 +1336,7 @@ export class CoinPusher {
     let model;
     try {
       const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-      model = await new GLTFLoader().loadAsync('/models/cabinet.glb');
+      model = await new GLTFLoader().loadAsync('models/cabinet.glb');
     } catch {
       return; // no cabinet.glb - procedural furniture stands
     }
@@ -1330,22 +1398,17 @@ export class CoinPusher {
     // each of these needs its own copy or the whole set pulses in lockstep - the same trap the old
     // cabinetGlow pass documented. Node transforms are all applied in the build script, so the
     // geometry's own bounding box is already in model-local coordinates.
+    // The balustrades' signal lamps, one per bay, chase from the player's end to the back in step
+    // with the board's marquee. Each gets its own material to light on its own; the export folded
+    // the authored strength into the colour, so the emissive colour is reset to full mint here.
+    this.fenceLamps = [];
     cabinet.traverse((object) => {
-      if (!object.isMesh) return;
-      const isRing = object.name.startsWith('marquee_ring');
-      const isColumn = object.name.startsWith('wall_column');
-      if (!isRing && !isColumn) return;
+      const match = object.isMesh && /^fence_lamp_(\d+)_[LR]$/.exec(object.name);
+      if (!match) return;
       object.material = object.material.clone();
-      object.geometry.computeBoundingBox();
-      const box = object.geometry.boundingBox;
-      this.shellNeon.push({
-        material: object.material,
-        base: object.material.emissiveIntensity,
-        // Phase off the part's own place in the machine, so the wave has somewhere to travel:
-        // rings off their radius, which runs the chase outwards through the marquee; columns off
-        // their depth, which runs the breath away down the corridor.
-        phase: isRing ? box.max.x * 1.15 : ((box.min.z + box.max.z) / 2) * 0.5,
-      });
+      object.material.emissive.set(PALETTE.mint);
+      object.material.emissiveIntensity = FENCE_LAMP_IDLE;
+      this.fenceLamps.push({ material: object.material, bay: Number(match[1]) });
     });
 
     for (const mesh of this.shellSurfaces) {
@@ -1387,6 +1450,7 @@ export class CoinPusher {
   // to start it. The slot is pure decoration; the chest is a real body in the world.
   buildBonusStage() {
     this.chests = [];
+    this.pendingChests = [];
     this.chestPool = [];
     // Chests waiting for the reels. One chest, one spin - see spinSlot.
     this.slotQueue = [];
@@ -1398,20 +1462,19 @@ export class CoinPusher {
       // two minutes to ride the machine, so several are in flight whenever thresholds come close.
       this.chestPrototype = this.fitProp(this.chestModelSource, GAME.chestWidth);
       const size = new THREE.Box3().setFromObject(this.chestPrototype).getSize(new THREE.Vector3());
-      // fitProp stands the model on the group's origin; a cannon body's origin is its centre. Sink
+      // fitProp stands the model on the group's origin; a physics body's origin is its centre. Sink
       // the model half its height inside the group and the group can track the body's pose
       // directly, tumbling included.
       this.chestPrototype.children[0].position.y -= size.y / 2;
-      this.chestHalfExtents = new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2);
+      this.chestHalfExtents = { x: size.x / 2, y: size.y / 2, z: size.z / 2 };
       this.chestHalfHeight = size.y / 2;
       this.chestHalfDepth = size.z / 2;
     }
     if (!this.slotModelSource) return;
-    const slot = this.fitProp(this.slotModelSource, GAME.slotWidth);
+    const slot = this.fitProp(this.slotModelSource, GAME.slotWidth * GAME.slotScale);
     // It hangs in the air over the front of the machine, so the key light dropped its whole
     // footprint onto the middle of the bed as a hard black block with nothing visibly above it.
     slot.traverse((object) => { object.castShadow = false; });
-    this.mountSlot(slot);
     slot.rotation.y = GAME.slotYaw;
     slot.position.set(0, GAME.slotY, GAME.slotZ);
     this.scene.add(slot);
@@ -1428,64 +1491,109 @@ export class CoinPusher {
     });
     if (windows.isEmpty()) return;
 
-    // ponytail: three digits drawn to a canvas, not three turning drums. The machine is small at
-    // the top of the shot, where a real spinning reel is a grey smear, and the model's drums are
-    // static geometry with no bones to turn anyway. Upgrade path: animated drums if the slot ever
-    // gets a camera of its own.
+    // Three real drums turning behind the window, each a cylinder lying on its side with the
+    // symbols wrapped round it. Each axis sits a little behind the window's plane, sized so the
+    // drum's chord there is exactly the window's height: what protrudes in front stays inside the
+    // window outline, and the curvature, the lighting falling off top and bottom and a symbol
+    // rolling away round the edge are all real rather than painted.
     const size = windows.getSize(new THREE.Vector3());
-    const canvas = document.createElement('canvas');
-    canvas.width = 384;
-    canvas.height = Math.round((384 * size.y) / size.x);
-    this.reelContext = canvas.getContext('2d');
-    this.reelTexture = new THREE.CanvasTexture(canvas);
-    this.reelTexture.colorSpace = THREE.SRGBColorSpace;
+    // The model's own reel panes are flat and opaque; the drums stand where they were.
+    slot.traverse((object) => {
+      if (object.isMesh && object.material?.name === GAME.slotReelMaterial) object.visible = false;
+    });
+    // ponytail: 1.0x (flatter) pokes the drums out below the window from the player's low eye.
+    const radius = size.y * 0.75;
+    const depth = Math.sqrt(radius ** 2 - (size.y / 2) ** 2);
+    const stripCanvas = document.createElement('canvas');
+    stripCanvas.width = 512 * DRUM_FACES.length;
+    stripCanvas.height = 472;
+    const paintStrip = (images) => drawReelStrip(stripCanvas.getContext('2d'), DRUM_FACES, {
+      palette: PALETTE, turn: DRUM_TEXTURE_TURN, images,
+    });
+    paintStrip();
+    const strip = new THREE.CanvasTexture(stripCanvas);
+    strip.colorSpace = THREE.SRGBColorSpace;
+    strip.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    // The artwork arrives after the machine is up; until then (or if a file is missing) the drums
+    // carry the drawn marks, so the slot is never blank.
+    Promise.all(DRUM_FACES.map((face) => new THREE.ImageLoader().loadAsync(REEL_IMAGE_FILES[face])
+      .then((image) => [face, trimmedArt(image)], () => [face, null])))
+      .then((loaded) => {
+        paintStrip(Object.fromEntries(loaded.filter(([, image]) => image)));
+        strip.needsUpdate = true;
+      });
+    this.reelMaterial = new THREE.MeshStandardMaterial({
+      map: strip, roughness: 0.75, metalness: 0,
+    });
+    // One group for the readout: drums, a dark well behind them and the bezel. Its +Z faces the
+    // player and +X is the player's right.
+    const panel = new THREE.Group();
+    const drumWidth = (size.x / 3) * 0.9;
+    const drumGeometry = new THREE.CylinderGeometry(radius, radius, drumWidth, 48, 1, false).rotateZ(Math.PI / 2);
+    this.reelDrums = [-1, 0, 1].map((column) => {
+      const drum = new THREE.Mesh(drumGeometry, this.reelMaterial);
+      drum.position.set(column * (size.x / 3), 0, -depth);
+      panel.add(drum);
+      return drum;
+    });
+    const well = new THREE.Mesh(
+      new THREE.BoxGeometry(size.x, size.y * 1.6, 0.02),
+      new THREE.MeshBasicMaterial({ color: PALETTE.shellDeep }),
+    );
+    well.position.z = -depth - radius - 0.02;
+    panel.add(well);
     // Three question marks until a chest pays: the machine must not sit there displaying a win it
     // has not paid yet. They stay on the winning symbol afterwards, as a real one does.
     this.reelSymbols = [GAME.slotIdleSymbol, GAME.slotIdleSymbol, GAME.slotIdleSymbol];
-    this.drawReels();
-
-    const panel = new THREE.Mesh(
-      new THREE.PlaneGeometry(size.x, size.y),
-      new THREE.MeshBasicMaterial({ map: this.reelTexture, toneMapped: false }),
-    );
-    // Just proud of the panes' front face. The player stands at -Z, so the plane faces that way.
     const centre = windows.getCenter(new THREE.Vector3());
     panel.position.set(centre.x, centre.y, windows.min.z - 0.01);
     panel.rotation.y = Math.PI;
     this.scene.add(panel);
     this.reelPanel = panel;
+    this.drawReels();
+    // A brass bezel round the window, so the reels sit in a fitted instrument case rather than on
+    // the model's flat pane. Built on the panel (whose +Z faces the player) to travel with it.
+    const brass = new THREE.MeshStandardMaterial({
+      ...BRASS, ...this.surfaces.brushed, color: PALETTE.gold, envMap: this.environmentTexture,
+      emissive: new THREE.Color(PALETTE.gold), emissiveIntensity: 0,
+    });
+    // A win lights the bezel, not the drums: glow over the artwork washes it out.
+    this.reelBezel = brass;
+    const bar = Math.min(size.x, size.y) * 0.06;
+    for (const [w, h, x, y] of [
+      [size.x + bar * 2, bar, 0, size.y / 2 + bar / 2], [size.x + bar * 2, bar, 0, -size.y / 2 - bar / 2],
+      [bar, size.y, size.x / 2 + bar / 2, 0], [bar, size.y, -size.x / 2 - bar / 2, 0],
+    ]) {
+      const piece = new THREE.Mesh(new RoundedBoxGeometry(w, h, bar * 0.8, 2, bar * 0.25), brass);
+      piece.position.set(x, y, bar * 0.2);
+      panel.add(piece);
+    }
   }
 
+  // Poses the drums: during a spin from the spin clock (drumAngleAt), otherwise on the faces shown.
   drawReels() {
-    const context = this.reelContext;
-    if (!context) return;
-    const { width, height } = context.canvas;
-    context.fillStyle = REEL_GROUND;
-    context.fillRect(0, 0, width, height);
-    // A finished spin only: while one runs, reel three cycles past the symbol the first two locked
-    // on, and the glow must not fire on that flicker. The idle face never counts either.
-    const win = !this.slotSpin && this.reelSymbols[0] !== GAME.slotIdleSymbol
-      ? slotWin(this.reelSymbols)
-      : null;
-    context.strokeStyle = win ? '#f2c94c' : '#1d5c66';
-    context.lineWidth = 8;
-    context.strokeRect(4, 4, width - 8, height - 8);
-    context.textAlign = 'center';
-    context.textBaseline = 'middle';
-    const ink = win ? '#ffe9a3' : '#eef7fb';
-    this.reelSymbols.forEach((symbol, index) => {
-      const x = width * (index + 0.5) / 3;
-      const paint = REEL_PAINTERS[symbol];
-      if (paint) {
-        paint(context, x, height / 2, height * 0.62, ink);
-        return;
-      }
-      context.fillStyle = ink;
-      context.font = 'bold 104px system-ui, sans-serif';
-      context.fillText(String(symbol), x, height / 2 + 4);
+    if (!this.reelDrums) return;
+    const spin = this.slotSpin;
+    this.reelDrums.forEach((drum, index) => {
+      const angle = spin
+        ? drumAngleAt({
+          start: spin.startAngles[index],
+          target: drumAngleFor(spin.faces[index]),
+          elapsed: spin.elapsed,
+          lockAt: GAME.slotSpinSeconds * (index + 1) / 3,
+          // Each drum at its own pace, or the two still turning roll past in lock-step.
+          speed: 8 + index * 1.2,
+        })
+        : drumAngleFor(this.reelSymbols[index]);
+      drum.rotation.x = DRUM_DIRECTION * angle;
     });
-    this.reelTexture.needsUpdate = true;
+    // A finished spin only, and never the idle face: three of a kind lights the drums gold.
+    const win = !spin && this.reelSymbols[0] !== GAME.slotIdleSymbol && slotWin(this.reelSymbols) !== null;
+    this.reelWin = win;
+    if (this.reelBezel) this.reelBezel.emissiveIntensity = win ? 0.6 : 0;
   }
+
+
 
   // A chest body and its model, pooled: retired chests come back rather than rebuilding the clone.
   acquireChest() {
@@ -1494,27 +1602,22 @@ export class CoinPusher {
     const mesh = this.chestPrototype.clone(true);
     mesh.visible = false;
     this.scene.add(mesh);
-    const body = new CANNON.Body({
+    // Its own material, at GAME.chestFrictionScale times the coin's friction: a box on the coin's
+    // grip slides off the bed on the payout tilt alone.
+    const body = this.world.addDynamicBox(this.chestHalfExtents, {
       mass: GAME.chestMass,
-      // Its own material, at GAME.chestFrictionScale times the coin's friction: a resting box
-      // makes about a fifth of the contacts a coin's rim does, and syncFrictionGravity divides the
-      // world's whole friction budget by that contact count, so a box on the coin material keeps
-      // only a fraction of the grip - enough for the payout tilt alone to slide it off the bed.
-      material: this.chestMaterial,
-      allowSleep: true,
-      shape: new CANNON.Box(this.chestHalfExtents),
+      linearDamping: GAME.chestLinearDamping,
+      angularDamping: GAME.chestAngularDamping,
     });
-    body.linearDamping = GAME.chestLinearDamping;
-    body.angularDamping = GAME.chestAngularDamping;
     const chest = { body, mesh, drop: null };
     // Touchdown is whatever it hits first - the tray, or the coins already on it. It is dust
     // only: the prize is paid when the chest falls off the front, not when it lands.
-    body.addEventListener('collide', () => {
+    body.onContact = () => {
       if (!chest.drop || chest.drop.landed) return;
       chest.drop.landed = true;
       const { x, y, z } = body.position;
       this.emitParticles(x, y, z, 14, true);
-    });
+    };
     return chest;
   }
 
@@ -1538,19 +1641,20 @@ export class CoinPusher {
   // nothing yet.
   dropChest(onWin) {
     if (!this.chestPrototype) return false;
+    // Won while a pile is settling: it would ride the remaining settle steps at many times game
+    // speed. Held until settlePile() finishes, which drops it then.
+    if (this.settling) {
+      this.pendingChests.push(onWin);
+      return true;
+    }
     const chest = this.acquireChest();
     const { body } = chest;
-    body.position.set(this.chestDropX(), GAME.chestStartY, chestDropZ(this.chestHalfDepth));
-    body.previousPosition.copy(body.position);
-    body.interpolatedPosition.copy(body.position);
-    body.velocity.setZero();
-    body.angularVelocity.set(0, 1.8, 0);
-    body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.random() * Math.PI * 2);
-    body.previousQuaternion.copy(body.quaternion);
-    body.interpolatedQuaternion.copy(body.quaternion);
-    body.aabbNeedsUpdate = true;
-    body.wakeUp();
-    this.world.addBody(body);
+    body.setEnabled(true);
+    body.setPose(
+      { x: this.chestDropX(), y: GAME.chestStartY, z: chestDropZ(this.chestHalfDepth) },
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * Math.PI * 2),
+    );
+    body.setAngularVelocity({ x: 0, y: 1.8, z: 0 });
     chest.mesh.visible = true;
     chest.drop = {
       landed: false,
@@ -1567,9 +1671,7 @@ export class CoinPusher {
   retireChest(index) {
     const chest = this.chests[index];
     if (!chest) return;
-    this.world.removeBody(chest.body);
-    chest.body.velocity.setZero();
-    chest.body.angularVelocity.setZero();
+    chest.body.setEnabled(false);
     chest.mesh.visible = false;
     chest.drop = null;
     this.chests.splice(index, 1);
@@ -1578,6 +1680,7 @@ export class CoinPusher {
 
   cancelChest() {
     for (let index = this.chests.length - 1; index >= 0; index -= 1) this.retireChest(index);
+    this.pendingChests = [];
     this.slotSpin = null;
     this.slotQueue = [];
     this.coinRain = null;
@@ -1585,7 +1688,7 @@ export class CoinPusher {
     this.camera.position.copy(this.cameraBase);
   }
 
-  // Money-bag payout: coins rain over the upper tray. Returns how many were scheduled, which is
+  // Money-bag payout: coins burst from the top of the pin board and rain down through it. Returns how many were scheduled, which is
   // what the HUD announces - a rain arriving on top of one still running just adds to the queue.
   rainCoins(count = GAME.coinRainCount) {
     this.coinRain = { remaining: (this.coinRain?.remaining ?? 0) + count, timer: 0 };
@@ -1600,11 +1703,16 @@ export class CoinPusher {
     while (rain.remaining > 0 && rain.timer <= 0) {
       rain.timer += GAME.coinRainInterval;
       rain.remaining -= 1;
-      this.spawnCoin(
-        (Math.random() - 0.5) * 2 * GAME.coinRainHalfWidth,
-        GAME.coinRainY + Math.random() * 0.4,
-        GAME.dropZoneZ + (Math.random() - 0.5) * GAME.coinRainDepth,
-      );
+      // Thrown out to either side and up from the dropper, so the stream fans out over the top row of
+      // pins like scattered petals before the board takes it - and still lands through its exit.
+      const side = Math.random() < 0.5 ? -1 : 1;
+      this.sendDownBoard({
+        x: (Math.random() - 0.5) * 0.6,
+        y: DROP_START_Y,
+        vx: side * (GAME.coinRainSpread[0] + Math.random() * (GAME.coinRainSpread[1] - GAME.coinRainSpread[0])),
+        vy: GAME.coinRainLift[0] + Math.random() * (GAME.coinRainLift[1] - GAME.coinRainLift[0]),
+        ceiling: DROP_START_Y + GAME.coinRainHeadroom,
+      }, Math.random() < GAME.premiumChance);
     }
     if (rain.remaining <= 0) this.coinRain = null;
   }
@@ -1635,10 +1743,8 @@ export class CoinPusher {
       // A counted coin is already down the chute; shaking it only fights its recycle.
       if (coin.counted) continue;
       const kick = quakeKick();
-      coin.body.velocity.x += kick.x * delta;
-      coin.body.velocity.y += kick.y * delta;
-      coin.body.velocity.z += kick.z * delta;
-      coin.body.wakeUp();
+      const v = coin.body.velocity;
+      coin.body.setVelocity({ x: v.x + kick.x * delta, y: v.y + kick.y * delta, z: v.z + kick.z * delta });
     }
     // reducedMotion drops the camera work and keeps the physics, the same rule the neon follows.
     if (!this.quality.reducedMotion) {
@@ -1661,8 +1767,7 @@ export class CoinPusher {
     // Backwards, because a retired chest is spliced out of the list.
     for (let index = this.chests.length - 1; index >= 0; index -= 1) {
       const { body, mesh, drop } = this.chests[index];
-      mesh.position.copy(body.interpolatedPosition);
-      mesh.quaternion.copy(body.interpolatedQuaternion);
+      body.lerpPose(this.world.alpha, mesh.position, mesh.quaternion);
       // The same phases a coin runs through: over the lip, then paid once it is under the bed.
       // ponytail: no hold timer. A chest lives until it drops - chestWidth is kept under what the
       // scraper can clear (tests/physics.test.js) and the blade spans the whole bed, so nothing
@@ -1695,21 +1800,9 @@ export class CoinPusher {
       return;
     }
     spin.elapsed += delta;
-    // Reels lock left to right over the spin, the last one on the final beat. Until a reel locks
-    // it cycles off the clock, which is a spinning drum as far as a glance from the bed goes.
-    const symbols = this.reelSymbols.map((symbol, index) => {
-      const lockAt = GAME.slotSpinSeconds * (index + 1) / 3;
-      if (spin.elapsed >= lockAt) return spin.faces[index];
-      // Each reel runs at its own rate. A shared clock with a fixed per-reel offset was fine over
-      // ten filler digits, but over a two-symbol strip it puts reels one and three in lock-step
-      // for the whole spin; drifting rates keep the three faces mixing. The win glow does not
-      // depend on this - see drawReels.
-      return REEL_STRIP[Math.floor(spin.elapsed * (18 + index * 5)) % REEL_STRIP.length];
-    });
-    if (symbols.some((symbol, index) => symbol !== this.reelSymbols[index])) {
-      this.reelSymbols = symbols;
-      this.drawReels();
-    }
+    // The drums turn off the spin clock and lock left to right, the last on the final beat - see
+    // drumAngleAt. The faces only count once the spin is over.
+    this.drawReels();
     if (spin.elapsed < GAME.slotSpinSeconds) return;
     // Cleared before the last redraw, because that is what turns the glow on - see drawReels.
     this.slotSpin = null;
@@ -1718,7 +1811,8 @@ export class CoinPusher {
     const win = slotWin(spin.faces);
     // Confetti on a win only - a miss gets the reels it earned and nothing else.
     if (win !== null) {
-      this.emitParticles(0, this.reelPanel.position.y, this.reelPanel.position.z, 18, true);
+      const reel = this.reelPanel.getWorldPosition(new THREE.Vector3());
+      this.emitParticles(0, reel.y, reel.z, 18, true);
     }
     this.slotHold = GAME.slotHoldSeconds;
     spin.notify?.(win);
@@ -1726,7 +1820,7 @@ export class CoinPusher {
 
   // onResult is called with the slotWin result - the symbol three reels showed, or null.
   spinSlot(onResult) {
-    if (!this.reelContext) {
+    if (!this.reelDrums) {
       onResult?.(slotWin(rollSlotResult()));
       return;
     }
@@ -1741,7 +1835,13 @@ export class CoinPusher {
   }
 
   startSpin(notify) {
-    this.slotSpin = { elapsed: 0, faces: rollSlotResult(), notify };
+    this.slotSpin = {
+      elapsed: 0,
+      faces: rollSlotResult(),
+      notify,
+      // Where each drum stands now, so the spin rolls on from it.
+      startAngles: this.reelSymbols.map((face) => drumAngleFor(face)),
+    };
   }
 
   // Matte-painted casino hall. The camera never moves, so one unlit plane is the entire set - no
@@ -1761,7 +1861,7 @@ export class CoinPusher {
     const HALL_Z = 11;
     const HALL_ASPECT = 2.334;
     // Measured off the art, not guessed: the row where the corridor converges.
-    const HALL_HORIZON = 0.387;
+    const HALL_HORIZON = 0.51;
     // Where that row goes: at the camera's own eye height. The art is an eye-level photograph,
     // and a horizon always sits at the viewer's eye. It used to sit on the hall floor, 8.2 below
     // the camera, which put the corridor's vanishing point about 22 degrees under where this
@@ -1939,7 +2039,11 @@ export class CoinPusher {
     // buildHeadboard adds its frame to this.neon for the pulse, and that one does not move with
     // the playfield's length - so the two bars that do are kept apart here.
     this.neonBars = [...this.neon];
-    this.frontTrim = this.addStaticBox(BED_WIDTH, 0.12, 0.14, 0, -0.02, GAME.playfieldFrontZ - 0.02, PALETTE.gold, {
+    // Inlaid in the bed's front face, never proud of it: it has no collider, and a coin left
+    // teetering at the lip (rules.js coinFallPhase) tips its rim through anything that stands above
+    // the deck or out past the face - the old 0.12 x 0.14 bar, 0.04 above and 0.09 out, read as
+    // coins sinking into the platform. 0.002 proud of the face only, to keep it off the bed's face.
+    this.frontTrim = this.addStaticBox(BED_WIDTH, FRONT_TRIM_HEIGHT, FRONT_TRIM_DEPTH, 0, -FRONT_TRIM_HEIGHT / 2 - 0.002, frontTrimZ(), PALETTE.gold, {
       ...BRASS,
       ...this.surfaces.brushed,
       envMap: this.environmentTexture,
@@ -1947,9 +2051,9 @@ export class CoinPusher {
       emissiveIntensity: 0.14,
       visualOnly: true,
     });
-    const chuteFloor = this.addStaticBox(BED_WIDTH + 0.4, 0.3, 2, 0, -2.4, chuteZ(), PALETTE.dark, { receiveShadow: true });
+    const chuteFloor = this.addStaticBox(BED_WIDTH + 0.4, 0.3, 2, 0, CHUTE_FLOOR_Y - 0.15, chuteZ(), PALETTE.dark, { receiveShadow: true });
     this.decor.push(chuteFloor);
-    const chuteLip = this.addStaticBox(BED_WIDTH + 0.5, 0.09, 0.12, 0, -2.2, chuteZ() - 1.07, PALETTE.gold, {
+    const chuteLip = this.addStaticBox(BED_WIDTH + 0.5, 0.09, 0.12, 0, CHUTE_WALL_TOP, chuteZ() - 1.07, PALETTE.gold, {
       ...BRASS,
       ...this.surfaces.brushed,
       envMap: this.environmentTexture,
@@ -1968,12 +2072,14 @@ export class CoinPusher {
       }),
     );
     chuteGlow.rotation.x = -Math.PI / 2;
-    chuteGlow.position.set(0, -2.23, chuteZ());
+    chuteGlow.position.set(0, CHUTE_FLOOR_Y + 0.02, chuteZ());
     this.scene.add(chuteGlow);
+    const wallHeight = CHUTE_WALL_TOP - CHUTE_FLOOR_Y + 0.3;
+    const wallY = CHUTE_WALL_TOP - wallHeight / 2;
     const chuteWalls = [
-      this.addStaticBox(0.2, 1.2, 2, -(INNER_X + 0.175), -1.9, chuteZ(), PALETTE.metal),
-      this.addStaticBox(0.2, 1.2, 2, INNER_X + 0.175, -1.9, chuteZ(), PALETTE.metal),
-      this.addStaticBox(BED_WIDTH + 0.4, 1.2, 0.2, 0, -1.9, chuteZ() - 0.9, PALETTE.metal),
+      this.addStaticBox(0.2, wallHeight, 2, -(INNER_X + 0.175), wallY, chuteZ(), PALETTE.metal),
+      this.addStaticBox(0.2, wallHeight, 2, INNER_X + 0.175, wallY, chuteZ(), PALETTE.metal),
+      this.addStaticBox(BED_WIDTH + 0.4, wallHeight, 0.2, 0, wallY, chuteZ() - 0.9, PALETTE.metal),
     ];
     this.decor.push(...chuteWalls);
     // The whole chute hangs off the front lip: offsets from chuteZ(), never absolute positions.
@@ -2013,10 +2119,20 @@ export class CoinPusher {
     this.scene.add(deckTop);
     const trayTopY = GAME.upperTrayY + GAME.upperTrayHeight / 2;
     const scraperGuardHeight = GAME.scraperGuardTopY - trayTopY;
-    this.shellSurfaces.push(this.scraper = this.addStaticBox(BED_WIDTH - 0.2, 1.2, 0.16, 0, 1.31, GAME.scraperZ, PALETTE.metal, {
-      ...this.surfaces.brushed,
-      roughness: 0.4,
-      metalness: 0.7,
+    // The scraper wears the deck's plate art, at the deck's own scale, so the board standing behind
+    // the tray reads as the same build as the floor in front of it. Gold frames on brushed metal
+    // were tried first and read as a different machine bolted on. The art is offset so one gold
+    // seam lands on the board's bottom edge, where it meets the tray, and none crosses its face.
+    // A step darker than the inlays: an upright plate in the middle of the shot, lit as brightly as
+    // the floor, would read as a wall of light.
+    const scraperPlates = this.deckPlate && this.plateSurfaceMaps(BED_WIDTH - 0.2, 1.2, true);
+    for (const texture of Object.values(scraperPlates || {})) texture.offset.y = DECK_PLATE_SEAM;
+    this.shellSurfaces.push(this.scraper = this.addStaticBox(BED_WIDTH - 0.2, 1.2, 0.16, 0, 1.31, GAME.scraperZ, scraperPlates ? DECK_PLATE_SCRAPER_TINT : PALETTE.metal, {
+      ...(scraperPlates || this.surfaces.brushed),
+      // The inlays' finish when it wears their art: at 0.7 metal the face is mostly a mirror of a
+      // dark room and the plate colour never shows.
+      roughness: scraperPlates ? 0.55 : 0.4,
+      metalness: scraperPlates ? 0.25 : 0.7,
       emissive: PALETTE.gold,
       emissiveIntensity: 0.35,
       // BED_WIDTH overlaps the side-wall colliders, so an edge-on coin cannot squeeze around
@@ -2032,7 +2148,6 @@ export class CoinPusher {
       visualOnly: true,
     });
     this.scraperStrip = scraperStrip;
-    this.frameScraper(BED_WIDTH - 0.2, 1.2, 0.16);
 
     // Moving upper tray: coins land here, meet the fixed scraper, then spill to the lower bed.
     const pusherMesh = new THREE.Group();
@@ -2065,16 +2180,18 @@ export class CoinPusher {
       new THREE.MeshStandardMaterial({ ...this.surfaces.brushed, color: PALETTE.shellRaised, metalness: 0.72, roughness: 0.3 }),
     );
     this.shellSurfaces.push(blade);
-    blade.position.set(0, bladeHeight / 2, -GAME.pusherDepth / 2);
+    blade.position.set(0, bladeHeight / 2, 0);
     blade.castShadow = this.quality.shadows;
-    pusherMesh.add(blade);
+    // The blade moves on its own shorter stroke (GAME.lowerBladeAmplitude), so it has its own group.
+    const bladeMesh = new THREE.Group();
+    bladeMesh.add(blade);
 
     const strip = new THREE.Mesh(
       new THREE.BoxGeometry(BED_WIDTH - 0.3, 0.11, 0.075),
       new THREE.MeshStandardMaterial({ ...BRASS, ...this.surfaces.brushed, color: PALETTE.gold, envMap: this.environmentTexture }),
     );
-    strip.position.set(0, 0.55, -GAME.pusherDepth / 2 - 0.075);
-    pusherMesh.add(strip);
+    strip.position.set(0, 0.55, -0.075);
+    bladeMesh.add(strip);
 
     // Gold edge strips, sunk so their top face is the tray's collision surface rather than a lip
     // standing 0.08 above it. The tray is only BED_WIDTH - 0.3 wide while a coin can rest with its
@@ -2083,267 +2200,286 @@ export class CoinPusher {
     // may sit above trayTopY for that reason - if these ever want to be a real lip they need a
     // collider on the pusher body too, which costs the outer 0.36 of tray on each side.
     for (const x of [-(INNER_X - 0.125), INNER_X - 0.125]) {
+      // Flush by design, so the strip's top, front and back faces are coplanar with the tray's and
+      // the two z-fought along both edges as the tray moved. The offset settles every tie in the
+      // strip's favour without lifting it off trayTopY.
       const rail = new THREE.Mesh(
         new THREE.BoxGeometry(0.1, 0.12, pusherDeckDepth),
-        new THREE.MeshStandardMaterial({ ...BRASS, ...this.surfaces.brushed, color: PALETTE.gold, envMap: this.environmentTexture }),
+        new THREE.MeshStandardMaterial({
+          ...BRASS,
+          ...this.surfaces.brushed,
+          color: PALETTE.gold,
+          envMap: this.environmentTexture,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+        }),
       );
       rail.position.set(x, trayTopY - 0.06, pusherDeckCenterZ);
       this.trayParts.push({ mesh: rail, inset: 0 });
       pusherMesh.add(rail);
     }
     this.scene.add(pusherMesh);
+    this.scene.add(bladeMesh);
     this.buildCabinetShell();
     this.buildHeadboard();
 
-    const pusherBody = new CANNON.Body({ mass: 0, material: this.pusherMaterial, type: CANNON.Body.KINEMATIC });
-    pusherBody.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, GAME.upperTrayHeight / 2, pusherDeckDepth / 2)),
-      new CANNON.Vec3(0, GAME.upperTrayY, pusherDeckCenterZ),
-    );
-    pusherBody.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, bladeHeight / 2, 0.07)),
-      new CANNON.Vec3(0, bladeHeight / 2, -GAME.pusherDepth / 2),
-    );
-    // Shape 0 is the deck, shape 1 the blade. Only the deck's length follows the panel; the
-    // blade stays a fixed half-depth in front of the centre, which is what keeps the stroke's
-    // calibration out of the player's hands.
-    this.pusherDeckShape = pusherBody.shapes[0];
-    pusherBody.position.set(0, 0, GAME.pusherOriginZ);
-    pusherBody.previousPosition.copy(pusherBody.position);
-    pusherBody.interpolatedPosition.copy(pusherBody.position);
-    this.world.addBody(pusherBody);
-
-    const updatePusherMotion = () => {
-      const motion = pusherMotionAt(this.world.stepnumber, this.quality.physicsStep);
-      pusherBody.position.z = motion.positionZ;
-      pusherBody.velocity.set(0, 0, motion.velocityZ);
-      pusherBody.aabbNeedsUpdate = true;
-    };
-    updatePusherMotion();
-    this.world.addEventListener('postStep', updatePusherMotion);
-    this.cleanup.push(() => this.world.removeEventListener('postStep', updatePusherMotion));
-
-    // Apply after the solver has finished the wall impact. Doing it from the collision callback
-    // itself would let the same solver step write some of the rejected velocity straight back.
-    const stopRailCoinsAtWalls = () => {
-      for (const coin of this.activeCoins) {
-        if (!coin.pendingWallStop) continue;
-        stopRailCoinAtWall(coin.body);
-        coin.pendingWallStop = false;
-        coin.railWallStopUntil = -Infinity;
-      }
-    };
-    this.world.addEventListener('postStep', stopRailCoinsAtWalls);
-    this.cleanup.push(() => this.world.removeEventListener('postStep', stopRailCoinsAtWalls));
+    // The deck. Only its length follows the panel; the blade is a separate body (below) whose stroke
+    // is fixed in config, which is what keeps the stroke's calibration out of the player's hands.
+    const pusherBody = this.world.addKinematicBoxes([
+      {
+        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: GAME.upperTrayHeight / 2, z: pusherDeckDepth / 2 },
+        offset: { x: 0, y: GAME.upperTrayY, z: pusherDeckCenterZ },
+      },
+    ], { x: 0, y: 0, z: pusherMotionAt(this.world.stepNumber, this.quality.physicsStep).positionZ });
+    this.pusherDeckShape = pusherBody.colliders[0];
+    const bladeBody = this.world.addKinematicBoxes([
+      {
+        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: bladeHeight / 2, z: 0.07 },
+        offset: { x: 0, y: bladeHeight / 2, z: 0 },
+      },
+    ], { x: 0, y: 0, z: lowerBladeZAt(this.world.stepNumber, this.quality.physicsStep) });
+    // Targeted before each step from the analytic strokes, so neither ever drifts.
+    this.world.beforeStep.push((stepNumber) => {
+      const { positionZ } = pusherMotionAt(stepNumber, this.quality.physicsStep);
+      pusherBody.rb.setNextKinematicTranslation({ x: 0, y: 0, z: positionZ });
+      bladeBody.rb.setNextKinematicTranslation({ x: 0, y: 0, z: lowerBladeZAt(stepNumber, this.quality.physicsStep) });
+    });
 
     this.pusherMesh = pusherMesh;
     this.pusherBody = pusherBody;
-    this.buildLauncher();
+    this.bladeMesh = bladeMesh;
+    this.bladeBody = bladeBody;
+    this.buildDropper();
     // Every geometry-driven part now exists, so a saved layout can be applied in one pass
     // instead of being threaded through the build.
     this.layoutGeometry();
   }
 
-  // A foreground launcher on a brass travel rail, matching the reference game's first-person
-  // control language. The reticle is parented to the pusher so its promise stays physically true.
-  buildLauncher() {
-    const shell = new THREE.MeshStandardMaterial({
-      ...this.surfaces.brushed,
-      color: PALETTE.shellRaised,
-      emissive: PALETTE.gold,
-      emissiveIntensity: 0.18,
-      metalness: 0.72,
-      roughness: 0.28,
-    });
-    const brass = new THREE.MeshStandardMaterial({
-      ...BRASS,
-      ...this.surfaces.brushed,
-      color: PALETTE.gold,
-      envMap: this.environmentTexture,
-      emissive: PALETTE.gold,
-      emissiveIntensity: 0.28,
-    });
-    const glow = new THREE.MeshBasicMaterial({ color: PALETTE.goldSoft, transparent: true, opacity: 0.9 });
+  // Coins come in from above, the way a real pusher feeds them, and fall through a pin board on the
+  // way down: every coin leaves a carriage at the centre of the slot's beam, and the pins and
+  // bumpers decide where it actually lands. The board fills the stood-up half. What it looks like
+  // is the board theme's (themes/); the fall itself is simulated in pachinko.js.
+  buildDropper() {
+    // The pop-up joint: everything above the fold - board, pins, bumpers, carriage and, once it is
+    // built, the slot - hangs off the mint sill and reclines with the hinge (see setHingeAngle).
+    // boardInner cancels the pivot, so its parts keep their world coordinates and only the rig turns.
+    this.boardRig = new THREE.Group();
+    this.boardRig.position.copy(BOARD_PIVOT);
+    this.boardInner = new THREE.Group();
+    this.boardInner.position.copy(this.boardRig.position).negate();
+    this.boardRig.add(this.boardInner);
+    this.scene.add(this.boardRig);
 
-    // ponytail: the travel rail is gone, both the lit inlay along its top and the body under it.
-    // Cut on request - the body's gold emissive read as a brown line lying across the floor, which
-    // is exactly what the inlay had looked like. The launcher hovers with nothing under it now.
-    // Its launcherTrackY went with it, since nothing else read that key; the rail sat at y -0.7,
-    // spanning the travel plus 0.375 each side, if one is ever wanted back.
-
-    const launcher = new THREE.Group();
-    if (this.launcherModelSource) {
-      const model = this.launcherModelSource.clone(true);
-      // No rotate, no scale, no fit. tools/build_launcher.py authors the barrel pointing +Z with
-      // its muzzle already on launcherMuzzleZ - launcherZ and its feet on launcherMountY, in this
-      // group's own space, so the only thing left to do is light it. tests/launcher.test.js holds
-      // the model to those two planes.
-      model.traverse((object) => {
-        if (!object.isMesh) return;
-        object.castShadow = this.quality.shadows;
-        object.receiveShadow = this.quality.shadows;
-        const hasMaterialArray = Array.isArray(object.material);
-        const materials = hasMaterialArray ? object.material : [object.material];
-        const copies = materials.map((material) => {
-          const copy = material.clone();
-          copy.envMap = this.environmentTexture;
-          copy.envMapIntensity = 0.65;
-          copy.needsUpdate = true;
-          return copy;
-        });
-        object.material = hasMaterialArray ? copies : copies[0];
-      });
-      // The charge core breathes on the same list the shell's neon rides. Only the core: this is
-      // a foreground object at the very bottom edge of the frame, and lighting all of it up would
-      // pull the eye off the playfield to look at a sliver.
-      const core = model.getObjectByName('launcher_core');
-      if (core) {
-        this.shellNeon.push({
-          material: core.material,
-          base: core.material.emissiveIntensity,
-          phase: 0,
-        });
-      }
-      launcher.add(model);
-      this.launcherModel = model;
-    } else {
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.48, 0.25, 16), shell);
-      base.position.y = 0.42;
-      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.36, 0.22, 16), brass);
-      collar.position.y = 0.61;
-      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.23, 0.92, 16), shell);
-      barrel.rotation.x = 1.06;
-      barrel.position.set(0, 0.78, 0.34);
-      const muzzle = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.055, 8, 20), brass);
-      muzzle.position.set(0, GAME.launcherMuzzleY, GAME.launcherMuzzleZ - GAME.launcherZ);
-      const sight = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.48), glow);
-      sight.position.set(0, 0.92, 0.34);
-      sight.rotation.x = 1.06;
-      launcher.add(base, collar, barrel, muzzle, sight);
-    }
-    launcher.position.set(this.launcherX, 0, GAME.launcherZ);
-    launcher.traverse((object) => {
-      if (!object.isMesh) return;
-      object.castShadow = this.quality.shadows;
-    });
-    this.scene.add(launcher);
-    this.launcherMesh = launcher;
-    this.measureLauncherClip(launcher);
-    this.updateLauncherReach();
-
-    // No trajectory line, and no ring on the tray either. The camera sits almost on the shot's
-    // own axis, so the arc projects as one near-vertical streak into the backboard and a flat
-    // marker at the landing point is edge-on to the point of invisibility. Both were tried. What
-    // survives is a lit gold pin hovering over the spot, on a camera-facing halo - a sprite,
-    // because anything lying on the tray is edge-on and any column tall enough to see reads as a
-    // solid can. The one thing aim changes is X, and a floating shape shows it at any framing.
-    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: this.glowTexture,
-      color: PALETTE.gold,
-      transparent: true,
-      opacity: 0.42,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    }));
-    halo.scale.setScalar(0.74);
-    this.scene.add(halo);
-    this.launcherBeacon = halo;
-
-    const pin = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.23),
-      new THREE.MeshStandardMaterial({
-        color: PALETTE.gold,
-        emissive: PALETTE.gold,
-        emissiveIntensity: 0.45,
-        ...BRASS,
+    const layout = boardPins();
+    this.pinBoard = { ...PIN_BOARD, pins: layout };
+    this.pinGlow = new Float32Array(layout.length);
+    const { halfWidth, bottom, pinRadius } = PIN_BOARD;
+    const theme = boardThemeFor(this.boardThemeId);
+    const built = theme.build({
+      board: this.boardInner,
+      palette: PALETTE,
+      quality: this.quality,
+      glowTexture: this.glowTexture,
+      // Lit by the room like the rest of the machine: brushed maps and the environment.
+      metal: (options) => new THREE.MeshStandardMaterial({
+        ...this.surfaces.brushed,
+        envMap: this.environmentTexture,
+        envMapIntensity: 0.65,
+        ...options,
       }),
-    );
-    this.scene.add(pin);
-    this.launcherPin = pin;
-
-    // The needle is what plants the marker on the tray: vertical is the one direction this camera
-    // does not foreshorten, so even a post a tenth of a coin wide reads the whole way down.
-    const needle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.012, 0.012, 0.86, 6),
-      new THREE.MeshBasicMaterial({
-        color: PALETTE.goldSoft,
-        transparent: true,
-        opacity: 0.6,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      }),
-    );
-    this.scene.add(needle);
-    this.launcherNeedle = needle;
-    this.updateLauncherVisuals();
+      // Coins fall in the plane z = dropZoneZ; the plate stands just behind a coin's thickness.
+      bounds: {
+        left: -halfWidth - 0.15,
+        right: halfWidth + 0.15,
+        bottom: bottom - 0.1,
+        top: GAME.slotY,
+        backZ: GAME.dropZoneZ + 0.4,
+        coinZ: GAME.dropZoneZ,
+      },
+      layout,
+      pinRadius,
+      bumpers: PIN_BOARD.bumpers,
+      mouth: { x: 0, y: DROPPER_Y - 0.31, halfWidth: COIN_RADIUS * 1.2 },
+      seat: { y: DROP_START_Y, radius: COIN_RADIUS },
+      carriageY: DROPPER_Y,
+    });
+    this.boardTheme = built;
+    this.pinMesh = built.pins;
+    this.bumpers = built.bumpers;
+    this.dropper = built.carriage;
+    this.dropShuttle = built.shuttle;
+    this.buildNextCoin();
+    for (const material of built.neon) this.shellNeon.push({ material, base: material.emissiveIntensity, phase: 0 });
   }
 
-  launchFromFront() {
-    const coin = this.acquireCoin();
-    if (!coin) return false;
-    coin.isPremium = Math.random() < GAME.premiumChance;
-    coin.mesh.material = this.coinMaterials[coin.isPremium ? 'premium' : 'regular'];
-    coin.mesh.visible = true;
-    coin.counted = false;
-    coin.falling = false;
-    coin.recycleAt = Infinity;
-    const target = launcherTargetFor(this.launcherAim);
-    this.launching.push({
-      coin,
-      // Leaves the muzzle where the launcher actually stands and crosses to where it was aimed.
-      fromX: this.launcherX,
-      x: target.x,
-      z: target.z,
-      elapsed: 0,
-      spin: Math.random() * Math.PI * 2,
-    });
+  // The coin waiting in the shuttle's cell. Its own mesh, not a pooled coin: it is never in the
+  // world, and it hands over to a real coin at the exact pose that coin starts its fall in.
+  buildNextCoin() {
+    this.nextPremium = Math.random() < GAME.premiumChance;
+    this.droppedAt = -Infinity;
+    if (!this.dropShuttle || !this.coinGeometry) return;
+    const seatY = DROP_START_Y - DROPPER_Y;
+    const coin = new THREE.Mesh(this.coinGeometry, this.coinMaterials[this.nextPremium ? 'premium' : 'regular']);
+    coin.quaternion.copy(COIN_UPRIGHT);
+    coin.position.y = seatY;
+    const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: this.glowTexture,
+      color: PALETTE.mint,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }));
+    flash.scale.setScalar(COIN_RADIUS * 4);
+    flash.position.set(0, seatY, -0.05);
+    this.dropShuttle.add(coin, flash);
+    this.nextCoin = coin;
+    this.nextCoinFlash = flash;
+  }
+
+  updateNextCoin() {
+    const coin = this.nextCoin;
+    if (!coin) return;
+    const { visible, lift, scale, flash } = refillPose(this.elapsed - this.droppedAt);
+    coin.visible = visible;
+    coin.position.y = DROP_START_Y - DROPPER_Y + lift;
+    coin.scale.setScalar(scale);
+    this.nextCoinFlash.material.opacity = flash;
+  }
+
+  launchCoin() {
+    // The coin that drops is the one the cell showed, colour included.
+    // From wherever the shuttle is: the pins decide where a coin lands, so there is nothing to aim.
+    const premium = this.nextPremium ?? Math.random() < GAME.premiumChance;
+    if (!this.sendDownBoard({ x: dropXAt(this.elapsed), y: DROP_START_Y }, premium)) return false;
+    this.boardTheme?.dispense?.(this.elapsed);
+    // A press during a refill still drops: the cell just restarts its refill.
+    this.nextPremium = Math.random() < GAME.premiumChance;
+    this.droppedAt = this.elapsed;
+    if (this.nextCoin) {
+      this.nextCoin.material = this.coinMaterials[this.nextPremium ? 'premium' : 'regular'];
+      this.nextCoin.visible = false;
+    }
     return true;
   }
 
-  // Coins stay scripted only for the presentation arc. Its endpoint is the world-fixed point the
-  // shot was aimed at; at touchdown Cannon takes over and the tray drags the coin along itself.
+  // Puts a coin on the pin board. start is simulateDrop's, so it may carry a launch velocity.
+  sendDownBoard(start, premium) {
+    const coin = this.acquireCoin();
+    if (!coin) return false;
+    coin.isPremium = premium;
+    coin.mesh.material = this.coinMaterials[coin.isPremium ? 'premium' : 'regular'];
+    coin.counted = false;
+    coin.falling = false;
+    coin.recycleAt = Infinity;
+    // The whole fall is worked out up front; the frames just play it back.
+    const { path, hits } = simulateDrop(start, this.pinBoard);
+    // Posed now, not on the next update: shown before then it would flash wherever it last was.
+    coin.mesh.position.copy(this.boardToWorld(start.x, start.y));
+    coin.mesh.quaternion.copy(this.boardRig.quaternion).multiply(COIN_UPRIGHT);
+    coin.mesh.visible = true;
+    this.launching.push({ coin, path, hits, hitIndex: 0, elapsed: 0 });
+    return true;
+  }
+
+  // Coins stay scripted down the pin board, standing on edge and rolling as they bounce, and Cannon
+  // takes over at the board's bottom edge with the velocity and spin the board left them with. A
+  // coin that leaves on edge lands on edge and topples, which is what a real one does.
   updateLaunching(delta) {
-    const orientation = new CANNON.Quaternion();
+    const spinAxis = new THREE.Vector3(0, 0, 1);
     for (let index = this.launching.length - 1; index >= 0; index -= 1) {
       const shot = this.launching[index];
       shot.elapsed += delta;
-      shot.spin += delta * 12;
-      const t = Math.min(shot.elapsed / GAME.launcherFlightTime, 1);
-      const eased = 1 - (1 - t) ** 2;
-      const z = THREE.MathUtils.lerp(GAME.launcherMuzzleZ, shot.z, eased);
-      const y = THREE.MathUtils.lerp(GAME.launcherMuzzleY, GAME.launcherLandingY, eased)
-        + Math.sin(Math.PI * t) * GAME.launcherArcHeight;
-      shot.coin.mesh.position.set(THREE.MathUtils.lerp(shot.fromX, shot.x, eased), y, z);
-      shot.coin.mesh.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), shot.spin);
-      if (t < 1) continue;
+      const { path } = shot;
+      const last = path[path.length - 1];
+      shot.cursor = pathCursor(path, shot.elapsed, shot.cursor ?? 0);
+      const sample = pathAt(path, shot.elapsed, shot.cursor);
+      // The fall is simulated in the board's own plane; the rig carries it wherever the hinge has
+      // reclined the board.
+      const boardTurn = this.boardRig.quaternion;
+      while (shot.hitIndex < shot.hits.length && shot.hits[shot.hitIndex].t <= shot.elapsed) {
+        this.playHit(shot.hits[shot.hitIndex], shot.coin.isPremium);
+        shot.hitIndex += 1;
+      }
+      shot.coin.mesh.position.copy(this.boardToWorld(sample.x, sample.y));
+      shot.coin.mesh.quaternion.copy(boardTurn).multiply(new THREE.Quaternion().setFromAxisAngle(spinAxis, sample.angle)).multiply(COIN_UPRIGHT);
+      if (shot.elapsed < last.t) continue;
 
       this.launching.splice(index, 1);
-      orientation.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), shot.spin);
+      const before = path[Math.max(0, path.length - 2)];
+      const step = Math.max(last.t - before.t, 1e-6);
+      const q = shot.coin.mesh.quaternion;
+      const exit = this.boardToWorld(last.x, last.y);
       this.releaseCoin(shot.coin, {
-        position: new CANNON.Vec3(shot.x, GAME.launcherLandingY, shot.z),
-        // No pusher Z any more: the arc now ends where it was aimed, so inheriting the blade's
-        // velocity would shove the coin off that point by a random amount per stroke phase.
-        velocity: new CANNON.Vec3(0, -1.1, 0),
-        angularVelocity: new CANNON.Vec3(0, 5.5, 0),
-        orientation,
+        position: exit,
+        // Tamed for the tray: the board can leave a coin doing 9, which the tray would bounce
+        // straight off. A real chute slows it the same way. Both are in the board's plane, so they
+        // turn with it like everything else the board hands over.
+        velocity: (new THREE.Vector3(
+          THREE.MathUtils.clamp((last.x - before.x) / step, -1.5, 1.5),
+          Math.max((last.y - before.y) / step, -4),
+          0,
+        ).applyQuaternion(this.boardRig.quaternion)),
+        angularVelocity: (new THREE.Vector3(
+          0, 0, THREE.MathUtils.clamp((last.angle - before.angle) / step, -12, 12),
+        ).applyQuaternion(this.boardRig.quaternion)),
+        orientation: q,
       });
     }
   }
 
+  // A hit lights what was struck, scaled by how hard: pins flash and swell, bumpers flash, swell and
+  // throw sparks. main.js turns the same callback into a tick or a thump.
+  playHit({ kind, index, x, y, speed }, premium) {
+    const strength = THREE.MathUtils.clamp(speed / 6, 0.25, 1);
+    if (kind === 'pin') this.pinGlow[index] = Math.max(this.pinGlow[index], strength);
+    if (kind === 'bumper') {
+      this.bumpers[index].glow = 1;
+      const spark = this.boardToWorld(x, y, GAME.dropZoneZ - 0.3);
+      this.emitParticles(spark.x, spark.y, spark.z, 8, premium);
+    }
+    this.callbacks.onBoardHit?.(kind, strength);
+  }
+
+  updateHits(delta) {
+    const fade = Math.exp(-HIT_FADE * delta);
+    if (this.pinGlow?.some((glow) => glow > 0)) {
+      const pose = new THREE.Matrix4();
+      const position = new THREE.Vector3();
+      const rotation = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      const colour = new THREE.Color();
+      this.pinGlow.forEach((glow, index) => {
+        if (glow <= 0) return;
+        const next = glow < 0.01 ? 0 : glow * fade;
+        this.pinGlow[index] = next;
+        this.pinMesh.getMatrixAt(index, pose);
+        pose.decompose(position, rotation, scale);
+        const swell = 1 + next * 0.5;
+        pose.compose(position, rotation, scale.set(swell, 1, swell));
+        this.pinMesh.setMatrixAt(index, pose);
+        this.pinMesh.setColorAt(index, colour.setScalar(1 + next * 3));
+      });
+      this.pinMesh.instanceMatrix.needsUpdate = true;
+      this.pinMesh.instanceColor.needsUpdate = true;
+    }
+    // The theme draws a bumper's glow (themes/: animate); this only lets it fade.
+    for (const bumper of this.bumpers ?? []) {
+      if (bumper.glow <= 0) continue;
+      bumper.glow = bumper.glow < 0.01 ? 0 : bumper.glow * fade;
+    }
+    if (this.dropShuttle) this.dropShuttle.position.x = dropXAt(this.elapsed);
+    this.updateNextCoin();
+    this.boardTheme?.animate({ time: this.elapsed, delta });
+    this.updateFenceLamps();
+  }
+
   releaseCoin(coin, { position, velocity, angularVelocity, orientation }) {
-    coin.pendingWallStop = false;
-    coin.railWallStopUntil = -Infinity;
-    coin.body.position.copy(position);
-    coin.body.previousPosition.copy(position);
-    coin.body.interpolatedPosition.copy(position);
-    coin.body.velocity.copy(velocity);
-    coin.body.angularVelocity.copy(angularVelocity);
-    coin.body.quaternion.copy(orientation);
-    coin.body.previousQuaternion.copy(coin.body.quaternion);
-    coin.body.interpolatedQuaternion.copy(coin.body.quaternion);
-    coin.body.aabbNeedsUpdate = true;
-    coin.body.wakeUp();
-    this.world.addBody(coin.body);
+    coin.body.setEnabled(true);
+    coin.body.setPose(position, orientation);
+    coin.body.setVelocity(velocity);
+    coin.body.setAngularVelocity(angularVelocity);
     this.activeCoins.push(coin);
   }
 
@@ -2418,15 +2554,72 @@ export class CoinPusher {
     if (changed) position.needsUpdate = true;
   }
 
+  // Keeps a struggling device smooth: two seconds under ~45 fps steps the render down - pixel ratio
+  // first, then shadows - and never back up mid-session. Physics is left alone: its step is the
+  // payout calibration, and on the measured pile it costs ~1 ms of a 16 ms frame anyway.
+  adaptQuality(frameDelta) {
+    const slow = adaptiveStepFor(this.slowFor ?? 0, frameDelta);
+    this.slowFor = slow.slowFor;
+    if (!slow.stepDown) return;
+    const ratio = this.renderer.getPixelRatio();
+    if (ratio > 1) {
+      const next = Math.max(1, ratio - 0.25);
+      this.renderer.setPixelRatio(next);
+      // The composer reads the ratio once, when it is built, and keeps its bloom buffers at that
+      // size - without this a phone stepped down to 1 still bloomed at 1.75, ~3x the pixels.
+      this.composer?.setPixelRatio(next);
+      this.resize?.();
+      return;
+    }
+    if (this.renderer.shadowMap.enabled) {
+      this.renderer.shadowMap.enabled = false;
+      this.scene.traverse((object) => { if (object.material) object.material.needsUpdate = true; });
+    }
+  }
+
+  updateFenceLamps() {
+    // A win breathes the reel bezel 0.6 -> 1.2 -> 0.6 every 0.8 s; a steady glow read as just stopped.
+    if (this.reelWin && this.reelBezel && !this.quality.reducedMotion) {
+      this.reelBezel.emissiveIntensity = 0.9 - 0.3 * Math.cos((this.elapsed * Math.PI * 2) / 0.8);
+    }
+    if (!this.fenceLamps?.length) return;
+    const lit = this.quality.reducedMotion ? 0 : fenceLampLit(this.elapsed);
+    for (const { material, bay } of this.fenceLamps) {
+      material.emissiveIntensity = this.quality.reducedMotion ? 0.3 : bay === lit ? 0.6 : FENCE_LAMP_IDLE;
+    }
+  }
+
+  // Copies every visible coin's transform into its material's batch.
+  syncCoinInstances() {
+    if (!this.coinBatches) return;
+    const counts = { regular: 0, premium: 0 };
+    const draw = (coin) => {
+      const { mesh } = coin;
+      if (!mesh.visible) return;
+      const name = mesh.material === this.coinMaterials.premium ? 'premium' : 'regular';
+      mesh.updateMatrix();
+      let batch = this.coinBatches[name];
+      if (counts[name] >= batch.instanceMatrix.count) batch = this.growCoinBatch(name, batch.instanceMatrix.count * 2);
+      batch.setMatrixAt(counts[name], mesh.matrix);
+      counts[name] += 1;
+    };
+    // A pile still settling is mid-collapse from its seed lattice - not something to show.
+    if (!this.settling) for (const coin of this.activeCoins) draw(coin);
+    for (const shot of this.launching) draw(shot.coin);
+    for (const [name, batch] of Object.entries(this.coinBatches)) {
+      batch.count = counts[name];
+      batch.instanceMatrix.needsUpdate = true;
+    }
+  }
+
   makeCoin() {
     const isPremium = Math.random() < GAME.premiumChance;
-    const mesh = new THREE.Mesh(this.coinGeometry, this.coinMaterials[isPremium ? 'premium' : 'regular']);
-    mesh.castShadow = this.quality.shadows;
-    mesh.receiveShadow = this.quality.shadows;
-    // The geometry is shared and baked at COIN_HEIGHT, so thickness rides on the instance.
+    // Not a mesh in the scene: a transform plus the material picking its batch. syncCoinInstances
+    // draws it. The geometry is shared and baked at COIN_HEIGHT, so thickness rides on the scale.
+    const mesh = new THREE.Object3D();
+    mesh.material = this.coinMaterials[isPremium ? 'premium' : 'regular'];
     mesh.scale.y = this.tuning.thickness / COIN_HEIGHT;
-    this.scene.add(mesh);
-    const body = createCoinBody(this.coinPhysicsMaterial, this.tuning);
+    const body = createCoinBody(this.world, this.tuning);
     const coin = {
       mesh,
       body,
@@ -2434,22 +2627,35 @@ export class CoinPusher {
       counted: false,
       falling: false,
       recycleAt: Infinity,
-      pendingWallStop: false,
-      railWallStopUntil: -Infinity,
     };
-    body.addEventListener('collide', (event) => {
-      if (event.body?.collisionRole !== 'side-wall') return;
-      if (coin.railWallStopUntil < this.elapsed) return;
-      coin.pendingWallStop = true;
-    });
     this.createdCoins += 1;
     return coin;
   }
 
+  // No cap: the machine bounds itself - coins leave over the lip as fast as they come in, so a long
+  // session holds steady around 160-200 - and the batches grow to whatever that turns out to be.
   acquireCoin() {
     if (this.coinPool.length > 0) return this.coinPool.pop();
-    if (this.createdCoins >= this.quality.coinCap) return null;
     return this.makeCoin();
+  }
+
+  // (Re)makes one material's instanced mesh with room for `capacity` coins. Instanced buffers are
+  // fixed-size, so growing means a new mesh; doubling keeps that rare.
+  growCoinBatch(name, capacity) {
+    const old = this.coinBatches[name];
+    const batch = new THREE.InstancedMesh(this.coinGeometry, this.coinMaterials[name], capacity);
+    batch.count = 0;
+    batch.frustumCulled = false;
+    batch.castShadow = this.quality.shadows;
+    batch.receiveShadow = this.quality.shadows;
+    batch.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.scene.add(batch);
+    if (old) {
+      this.scene.remove(old);
+      old.dispose();
+    }
+    this.coinBatches[name] = batch;
+    return batch;
   }
 
   spawnCoin(x, y, z, seedTier = null) {
@@ -2463,60 +2669,107 @@ export class CoinPusher {
     coin.counted = false;
     coin.falling = false;
     coin.recycleAt = Infinity;
-    coin.pendingWallStop = false;
-    coin.railWallStopUntil = -Infinity;
-    coin.body.position.set(x, y, z);
-    coin.body.previousPosition.copy(coin.body.position);
-    coin.body.interpolatedPosition.copy(coin.body.position);
     // A seeded coin gets a sideways shove rather than being placed at rest: sliding a few
     // centimetres into its neighbours during settlePile() is what rubs out the rows and
-    // columns it was seeded on. A dropped coin still just falls.
-    if (seed) {
-      // The lower bed is intentionally a flat, open layer. A large startup kick was useful for
-      // breaking up the old dense lattice, but it also climbed coins over their neighbours
-      // before frame one. Its randomized slots already provide the visual variation it needs.
-      const kick = lowerSeed ? 0 : 0.8;
-      coin.body.velocity.set((Math.random() - 0.5) * kick, 0, (Math.random() - 0.5) * kick);
-    }
-    else coin.body.velocity.set(0, -1, 0);
+    // columns it was seeded on. A dropped coin still just falls. The lower bed is a flat, open
+    // layer and gets no shove: a large startup kick climbed coins over their neighbours before
+    // frame one, and its randomized slots already provide the variation it needs.
+    const kick = seed ? (lowerSeed ? 0 : 0.8) : 0;
+    const velocity = seed
+      ? { x: (Math.random() - 0.5) * kick, y: 0, z: (Math.random() - 0.5) * kick }
+      : { x: 0, y: -1, z: 0 };
     const spin = lowerSeed ? 0 : 1;
-    coin.body.angularVelocity.set(
-      (Math.random() - 0.5) * 2 * spin,
-      (Math.random() - 0.5) * 4 * spin,
-      (Math.random() - 0.5) * 2 * spin,
-    );
-    const yaw = new CANNON.Quaternion();
-    yaw.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), Math.random() * Math.PI * 2);
-    const tilt = new CANNON.Quaternion();
-    tilt.setFromAxisAngle(
-      new CANNON.Vec3(Math.random(), 0, Math.random()),
+    const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * Math.PI * 2);
+    const tilt = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(Math.random(), 0, Math.random()).normalize(),
       (Math.random() - 0.5) * (lowerSeed ? 0 : seed ? 0.42 : 0.3),
     );
-    const orientation = yaw.mult(tilt);
-    coin.body.quaternion.copy(orientation);
-    coin.body.previousQuaternion.copy(coin.body.quaternion);
-    coin.body.interpolatedQuaternion.copy(coin.body.quaternion);
-    coin.body.aabbNeedsUpdate = true;
-    coin.body.wakeUp();
-    this.world.addBody(coin.body);
+    const orientation = yaw.multiply(tilt);
+    coin.body.setEnabled(true);
+    coin.body.setPose({ x, y, z }, orientation);
+    // The mesh too: a coin spawned mid-frame (the bonus rain) is drawn before the next
+    // interpolation pass, and would flash at wherever it last was.
+    coin.mesh.position.set(x, y, z);
+    coin.mesh.quaternion.copy(orientation);
+    coin.body.setVelocity(velocity);
+    coin.body.setAngularVelocity({
+      x: (Math.random() - 0.5) * 2 * spin,
+      y: (Math.random() - 0.5) * 4 * spin,
+      z: (Math.random() - 0.5) * 2 * spin,
+    });
     this.activeCoins.push(coin);
     return true;
   }
 
+  /** Settling a new pile, or physics behind real time - auto-drop waits (main.js). */
+  get busy() {
+    return Boolean(this.settling || this.behind);
+  }
+
   drop() {
-    return this.launchFromFront();
+    if (this.closed || this.settling) return false;
+    return this.launchCoin();
+  }
+
+  // A coin that has come down off the tray onto the lower bed takes the bed's high coin-on-coin
+  // grip (physics.js LOWER_COIN_FRICTION); the tray keeps the low one it needs to drain. Coins
+  // only ever travel down, so this is one-way until the coin is recycled.
+  gripOnLowerBed(body) {
+    if (body.material === 'coin' && onLowerBed(body.position)) this.world.setMaterial(body, 'lowerCoin');
+  }
+
+  // Over the live ceiling, buried coins go back to the pool - see buriedCoinIndex. Up to three a
+  // search, so a burst of drops cannot outrun it (three per 0.25 s is 12 a second, drops come ~1). The ceiling itself follows the measured step
+  // (recordPerf -> nextCoinCeiling), from quality.maxLiveCoins down as the device heats up.
+  // Searched at most every TRIM_INTERVAL of game time: the search is O(n^2) and only runs when the
+  // pile is at its heaviest, so doing it every frame added cost exactly when there was least room.
+  trimBuriedCoins() {
+    const ceiling = this.coinCeiling ?? this.quality.maxLiveCoins;
+    if (this.activeCoins.length <= ceiling || this.elapsed < (this.nextTrimAt ?? 0)) return;
+    this.nextTrimAt = this.elapsed + TRIM_INTERVAL;
+    for (let n = 0; n < 3 && this.activeCoins.length > ceiling; n += 1) {
+      const index = buriedCoinIndex(this.activeCoins.map((coin) => coin.body.position), this.tuning.thickness);
+      if (index < 0) return;
+      this.recycleCoin(index);
+    }
+  }
+
+  // Frame and physics timings, averaged over half a second, for the dev overlay in main.js.
+  recordPerf(frameSeconds, physicsMs) {
+    const perf = this.perfWindow ??= { time: 0, frames: 0, steps: 0, dropped: 0, physics: 0, physicsMax: 0, render: 0 };
+    perf.time += frameSeconds;
+    perf.frames += 1;
+    perf.steps += this.world.lastSteps ?? 0;
+    perf.dropped += this.world.droppedSeconds ?? 0;
+    perf.physics += physicsMs;
+    perf.render += this.lastRenderMs ?? 0;
+    perf.physicsMax = Math.max(perf.physicsMax, physicsMs);
+    if (perf.time < 0.5) return;
+    // Physics fell behind over the last half second: auto-drop holds off (main.js) until it is back.
+    this.behind = perf.dropped > 0.05;
+    if (perf.steps > 0) {
+      this.coinCeiling = nextCoinCeiling(this.coinCeiling ?? this.quality.maxLiveCoins, perf.physics / perf.steps, this.quality.maxLiveCoins);
+    }
+    this.perf = {
+      ceiling: this.coinCeiling ?? this.quality.maxLiveCoins,
+      fps: perf.frames / perf.time,
+      physicsMs: perf.physics / perf.frames,
+      physicsMaxMs: perf.physicsMax,
+      renderMs: perf.render / perf.frames,
+      pixelRatio: this.renderer.getPixelRatio(),
+      build: physicsBuild,
+      coins: this.activeCoins.length,
+    };
+    this.perfWindow = null;
   }
 
   recycleCoin(index) {
     const [coin] = this.activeCoins.splice(index, 1);
     if (!coin) return;
-    this.world.removeBody(coin.body);
-    coin.body.velocity.setZero();
-    coin.body.angularVelocity.setZero();
+    this.world.setMaterial(coin.body, 'coin');
+    coin.body.setEnabled(false);
     coin.mesh.visible = false;
     coin.falling = false;
-    coin.pendingWallStop = false;
-    coin.railWallStopUntil = -Infinity;
     this.coinPool.push(coin);
   }
 
@@ -2534,7 +2787,7 @@ export class CoinPusher {
       const position = seedPosition(index, pileSeed, this.tuning.thickness, this.pusherBody.position.z);
       this.spawnCoin(position.x, position.y, position.z, position.tier);
     }
-    this.settlePile();
+    return this.settlePile();
   }
 
   // Run the empty world - no coins in it, so the steps cost nothing - up to the instant the
@@ -2544,8 +2797,8 @@ export class CoinPusher {
     const step = this.quality.physicsStep;
     const perStroke = Math.round((2 * Math.PI / GAME.pusherSpeed) / step);
     const atRetreat = Math.round((Math.PI / 2 / GAME.pusherSpeed) / step);
-    const wait = ((atRetreat - this.world.stepnumber) % perStroke + perStroke) % perStroke;
-    for (let i = 0; i < wait; i += 1) this.world.step(step);
+    const wait = ((atRetreat - this.world.stepNumber) % perStroke + perStroke) % perStroke;
+    for (let i = 0; i < wait; i += 1) this.world.stepOnce();
   }
 
   // A seeded lattice reads as a grid however hard the slots are jittered - the eye locks onto
@@ -2553,26 +2806,45 @@ export class CoinPusher {
   // forward before the first frame and the pile arrives already collapsed, coins tipped and
   // riding on each other the way they are after a minute of play. Half of that is the pusher
   // squeezing the pile against the lip; gravity alone just settles it back into flat rows.
-  settlePile() {
+  //
+  // Run in frame-sized slices, yielding between them: in one go it is 360 steps (~200 ms on a
+  // desktop, seconds on a phone) with the page frozen - at load, on 重新開始 and on a thickness
+  // or geometry change. The steps and their order are the same, so the pile settles the same.
+  // While `settling`, animate() leaves physics, scoring and the pile's drawing alone and drop()
+  // refuses; a newer resetPile() supersedes this one through the token.
+  async settlePile() {
+    const token = {};
+    this.settleToken = token;
+    this.settling = true;
     // Much the most expensive thing the game ever does - every coin awake, every pair in
     // contact - so the solver runs lean. Residual error is cleaned up by the first real
     // frames at full iterations, before the player has taken a turn.
-    const iterations = this.world.solver.iterations;
-    this.world.solver.iterations = SETTLE_SOLVER_ITERATIONS;
-    // Has to be the game's own step: the pusher's postStep handler derives its stroke from
-    // world.stepnumber times this exact value.
-    const step = this.quality.physicsStep;
-    for (let i = 0; i < Math.round(PILE_SETTLE_SECONDS / step); i += 1) this.world.step(step);
-    this.world.solver.iterations = iterations;
+    this.world.setIterations(SETTLE_SOLVER_ITERATIONS);
+    const total = Math.round(PILE_SETTLE_SECONDS / this.quality.physicsStep);
+    for (let i = 0; i < total;) {
+      const sliceStart = performance.now();
+      do {
+        this.world.stepOnce();
+        for (const coin of this.activeCoins) this.gripOnLowerBed(coin.body);
+        i += 1;
+      } while (i < total && performance.now() - sliceStart < SETTLE_SLICE_MS);
+      if (i < total) await nextFrame();
+      if (this.settleToken !== token) return;
+    }
+    this.world.setIterations(this.tuning.solverIterations);
+    this.world.accumulator = 0;
     // A coin the stroke shoved over the lip never happened: recycle it, or the payout check
-    // on frame one pays the player for a pile that fell over on its own.
+    // on frame one pays the player for a pile that fell over on its own. Only coins that really
+    // went over - one still hanging on the lip is the pile the player is meant to find.
     for (let i = this.activeCoins.length - 1; i >= 0; i -= 1) {
-      if (this.activeCoins[i].body.position.z < GAME.edgeZ) this.recycleCoin(i);
+      if (coinFallPhase({}, this.activeCoins[i].body.position)) this.recycleCoin(i);
     }
     for (const coin of this.activeCoins) {
       coin.mesh.position.copy(coin.body.position);
       coin.mesh.quaternion.copy(coin.body.quaternion);
     }
+    this.settling = false;
+    for (const onWin of this.pendingChests.splice(0)) this.dropChest(onWin);
   }
 
   setEnvironmentRotation(horizontalDegrees, verticalDegrees) {
@@ -2583,142 +2855,66 @@ export class CoinPusher {
     });
   }
 
-  // Direct manipulation: dragging anywhere on the playfield moves the foreground launcher. A
-  // canvas drag never spends a coin; firing remains a separate, deliberate button/key action.
-  bindPointer() {
-    let dragging = false;
-    const aimAt = (clientX) => {
-      const rect = this.canvas.getBoundingClientRect();
-      if (!rect.width) return 0;
-      return THREE.MathUtils.clamp(((clientX - rect.left) / rect.width) * 2 - 1, -1, 1);
-    };
-    const moveTo = (clientX) => {
-      const aim = aimAt(clientX);
-      this.setLauncherAim(aim);
-      this.callbacks.onAimChange?.(aim);
-    };
-    const onDown = (event) => {
-      dragging = true;
-      this.canvas.setPointerCapture?.(event.pointerId);
-      moveTo(event.clientX);
-    };
-    const onMove = (event) => { if (dragging) moveTo(event.clientX); };
-    const onUp = () => {
-      dragging = false;
-    };
-    const onCancel = () => {
-      dragging = false;
-    };
-    this.canvas.addEventListener('pointerdown', onDown);
-    this.canvas.addEventListener('pointermove', onMove);
-    this.canvas.addEventListener('pointerup', onUp);
-    this.canvas.addEventListener('pointercancel', onCancel);
-    this.cleanup.push(() => {
-      this.canvas.removeEventListener('pointerdown', onDown);
-      this.canvas.removeEventListener('pointermove', onMove);
-      this.canvas.removeEventListener('pointerup', onUp);
-      this.canvas.removeEventListener('pointercancel', onCancel);
-    });
-  }
-
-  // Every vertex the frame can show, reduced to the pair the reach clamp needs: how far from the
-  // camera it sits, and how far off the rail's centre. Both are constants - the camera never moves
-  // and fov is fixed - so this runs once and resize only rescales it. ~1.1k vertices, which beats
-  // reasoning about the bounding box: the box's corners are not where its silhouette is tightest.
-  measureLauncherClip(launcher) {
-    launcher.updateWorldMatrix(true, true);
-    this.camera.updateMatrixWorld();
-    // The frame's bottom edge is focal * view.y === -depth.
-    const focal = 1 / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
-    const point = new THREE.Vector3();
-    const world = new THREE.Vector3();
-    const clip = [];
-    launcher.traverse((object) => {
-      const position = object.geometry?.attributes?.position;
-      if (!position) return;
-      for (let index = 0; index < position.count; index += 1) {
-        world.fromBufferAttribute(position, index).applyMatrix4(object.matrixWorld);
-        for (const yaw of FAN_SAMPLES) {
-          // The same yaw launcherYawFor applies, about the launcher's own origin. Sampled across
-          // the whole fan rather than at its ends: turning swings the muzzle out and the tail in,
-          // so neither extreme is reliably the widest, and a mid-fan angle can be.
-          const localZ = world.z - GAME.launcherZ;
-          point.set(
-            world.x * Math.cos(yaw) + localZ * Math.sin(yaw),
-            world.y,
-            GAME.launcherZ - world.x * Math.sin(yaw) + localZ * Math.cos(yaw),
-          );
-          const offset = Math.abs(point.x - launcher.position.x);
-          point.applyMatrix4(this.camera.matrixWorldInverse);
-          const depth = -point.z;
-          // Below the bottom edge: cropped either way, so how far this one hangs off to the side is
-          // invisible and must not cost the rail any travel. The launcher is meant to sit half under
-          // the frame, so this is most of the near end of the barrel.
-          if (focal * point.y + depth < 0) continue;
-          clip.push(depth, offset);
-        }
-      }
-    });
-    this.launcherClip = clip;
-  }
-
-  // The rail is wider than a narrow window can frame: at z -5.9 the launcher sits between the
-  // camera and the machine, so the visible width there is a fraction of the playfield's and full
-  // aim pushed the barrel off screen. Aim keeps its whole -1..1 range; what it maps onto is the
-  // smaller of the rail's half-width and what the frame holds, so the launcher and the point it
-  // drops on stay together.
-  // The camera has no yaw or roll, so a vertex's depth does not move with x: each one is an
-  // independent ceiling on the reach and the tightest wins. Vertical fov means the result only
-  // moves with aspect - a tall narrow window runs out of room first - which is why resize is the
-  // only caller.
-  updateLauncherReach() {
-    if (!this.launcherClip) return;
-    let reach = GAME.launcherTravelHalfWidth;
-    for (let index = 0; index < this.launcherClip.length; index += 2) {
-      reach = Math.min(
-        reach,
-        launcherReachFor(this.camera.fov, this.camera.aspect, this.launcherClip[index], this.launcherClip[index + 1]),
-      );
-    }
-    this.launcherReach = reach;
-    this.setLauncherAim(this.launcherAim);
-  }
-
-  setLauncherAim(aim) {
-    this.launcherAim = THREE.MathUtils.clamp(Number.isFinite(aim) ? aim : 0, -1, 1);
-    this.launcherX = launcherXFor(this.launcherAim, this.launcherReach);
-    this.updateLauncherVisuals();
-  }
-
-  updateLauncherVisuals() {
-    if (!this.launcherMesh || !this.launcherPin || !this.launcherBeacon) return;
-    const y = GAME.upperTrayY + GAME.upperTrayHeight / 2 + 0.02;
-    // Two different x's on purpose: the launcher sits where the frame lets it, the markers sit on
-    // the drop point, and the barrel's yaw is what spans the gap between them.
-    const targetX = launcherTargetFor(this.launcherAim).x;
-    this.launcherMesh.position.x = this.launcherX;
-    this.launcherMesh.rotation.y = launcherYawFor(this.launcherX, targetX);
-    this.launcherPin.position.set(targetX, y + this.pinHover, GAME.dropZoneZ);
-    this.launcherBeacon.position.copy(this.launcherPin.position);
-    this.launcherNeedle.position.set(targetX, y + 0.43, GAME.dropZoneZ);
-  }
-
   bindResize() {
     const resize = () => {
       const width = this.canvas.clientWidth;
       const height = this.canvas.clientHeight;
       if (!width || !height) return;
       this.camera.aspect = width / height;
-      this.camera.updateProjectionMatrix();
+      this.poseCamera();
       this.renderer.setSize(width, height, false);
       this.composer?.setSize(width, height);
-      this.updateLauncherReach();
     };
     this.resize = resize;
     this.resizeObserver = new ResizeObserver(resize);
     this.resizeObserver.observe(this.canvas);
     this.cleanup.push(() => this.resizeObserver.disconnect());
     resize();
+  }
+
+  /**
+   * Follows the hinge: 180 lies the machine flat, 90 or less stands it up (see FOLD_CAMERA) and
+   * stands the board up with it (see boardReclineFor). The camera and the board ease there over a
+   * few frames rather than jumping with each coarse hinge reading. Nearly shut, the machine pauses.
+   */
+  setHingeAngle(degrees) {
+    this.foldTarget = foldFor(degrees);
+    this.closed = closedFor(this.closed, degrees);
+  }
+
+  /** A point in the pin board's plane (z defaults to the coins' plane), in world space. */
+  boardToWorld(x, y, z = GAME.dropZoneZ) {
+    this.boardInner.updateWorldMatrix(true, false);
+    return this.boardInner.localToWorld(new THREE.Vector3(x, y, z));
+  }
+
+  // The pose for the current fold: position, target and fov blended between the flat and fold poses.
+  poseCamera() {
+    const fold = this.fold;
+    const lerp = (from, to) => from.map((value, index) => THREE.MathUtils.lerp(value, to[index], fold));
+    this.camera.position.set(...lerp(FLAT_CAMERA.position, FOLD_CAMERA.position));
+    this.camera.lookAt(...lerp(FLAT_CAMERA.target, FOLD_CAMERA.target));
+    // The board lies parallel to the screen at whatever pitch the camera now has - see boardReclineFor.
+    this.camera.updateMatrixWorld();
+    this.boardRig.rotation.x = boardReclineFor(this.camera.getWorldDirection(new THREE.Vector3()));
+    this.camera.fov = THREE.MathUtils.lerp(fovForAspect(this.camera.aspect), FOLD_CAMERA.fov, fold);
+    // FOLD_CAMERA only puts the sill near the fold: where the fold lands in the canvas moves with the
+    // HUD, the controls and the window, and a fixed target was 2.3 pt off on the device. So measure
+    // both - where this pose puts the sill, where the fold is - and slide the frame by the difference,
+    // scaled in with the fold.
+    this.camera.clearViewOffset();
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
+    const width = this.canvas.clientWidth;
+    const height = this.canvas.clientHeight;
+    const top = this.canvas.getBoundingClientRect().top;
+    const sillNdc = new THREE.Vector3(0, SILL_HEIGHT, GAME.dropZoneZ - 0.1).project(this.camera).y;
+    const shift = height ? foldShiftFor(window.innerHeight / 2 - top, height, sillNdc) * fold : 0;
+    if (Math.abs(shift) >= 0.5) {
+      this.camera.setViewOffset(width, height, 0, shift, width, height);
+      this.camera.updateProjectionMatrix();
+    }
+    this.cameraBase.copy(this.camera.position);
   }
 
   start() {
@@ -2737,30 +2933,51 @@ export class CoinPusher {
     if (!this.running) return;
     this.frameId = requestAnimationFrame(this.animate);
     this.timer.update(timestamp);
-    const delta = Math.min(this.timer.getDelta(), 0.05);
-    this.elapsed += delta;
+    const frameDelta = Math.min(this.timer.getDelta(), 0.05);
+    this.adaptQuality(frameDelta);
+    // Nearly shut, game time stops: physics, the board, scoring, recycling and the slot's spin all
+    // read it, so a spin in progress cannot finish and pay while nobody can see it. Rendering,
+    // dimming and the hinge's easing keep the real frame time.
+    let delta = this.closed || this.settling ? 0 : frameDelta;
 
     // The pusher always runs, including before the first player drop. Initial stability comes
     // from the seeded clearances in physics.js, not from pausing the machine.
-    this.world.step(this.quality.physicsStep, delta, this.quality.physicsMaxSubSteps);
-    this.updateLaunching(delta);
+    // Nearly shut: nobody can see the machine, so it holds still rather than paying out unseen.
+    if (delta > 0) {
+      const physicsStart = performance.now();
+      this.world.step(delta);
+      // Game time is the time physics actually simulated: when a struggling device drops the
+      // backlog (world.js step), the board, recycling, bonus timers and auto-drop slow with it
+      // rather than outrunning the pile they feed.
+      delta -= this.world.droppedSeconds;
+      const physicsMs = performance.now() - physicsStart;
+      this.recordPerf(frameDelta, physicsMs);
+      // A device whose single step eats most of a frame cannot catch up by stepping more: each
+      // catch-up frame is longer still, and it locks at a third of the frame rate (measured: an
+      // iPhone at 20 fps, 66 ms of physics a frame). One step a frame there, which plays a little
+      // slow instead.
+      if (this.world.lastSteps > 0) {
+        this.world.maxSubSteps = nextMaxSubSteps(this.world.maxSubSteps, physicsMs / this.world.lastSteps, this.quality.physicsMaxSubSteps);
+      }
+      this.updateLaunching(delta);
+    }
+    this.elapsed += delta;
 
     const scored = [];
-    for (let index = this.activeCoins.length - 1; index >= 0; index -= 1) {
+    for (let index = this.settling ? -1 : this.activeCoins.length - 1; index >= 0; index -= 1) {
       const coin = this.activeCoins[index];
       // Render from the interpolated pose: world.step() runs a fixed-step accumulator, so
       // a display running at any other rate takes 0 or 2 steps on some frames. Reading the
       // raw pose there freezes a coin for a frame and double-jumps it the next.
-      coin.mesh.position.copy(coin.body.interpolatedPosition);
-      coin.mesh.quaternion.copy(coin.body.interpolatedQuaternion);
+      coin.body.lerpPose(this.world.alpha, coin.mesh.position, coin.mesh.quaternion);
       if (coin.counted && coin.recycleAt <= this.elapsed) {
         this.recycleCoin(index);
         continue;
       }
-      const phaseResult = coinPhase(coin, coin.body.position);
-      if (phaseResult === 'cross') {
+      this.gripOnLowerBed(coin.body);
+      const phaseResult = coinFallPhase(coin, coin.body.position);
+      if (phaseResult === 'fall') {
         coin.falling = true;
-        nudgeOverLip(coin.body);
       } else if (phaseResult === 'score') {
         coin.counted = true;
         coin.recycleAt = this.elapsed + this.recycleDelay;
@@ -2771,6 +2988,7 @@ export class CoinPusher {
       }
     }
     if (scored.length > 0) this.callbacks.onScore?.(scored, this.elapsed);
+    if (!this.closed && !this.settling) this.trimBuriedCoins();
 
     if (!this.quality.reducedMotion) {
       const pulse = 0.75 + 0.2 * Math.sin(this.elapsed * 3);
@@ -2783,19 +3001,27 @@ export class CoinPusher {
         part.material.emissiveIntensity = part.base * (0.2 + 0.8 * wave * wave);
       }
     }
-    this.updateBonus(delta);
-    this.updateParticles(delta);
-    this.pusherMesh.position.copy(this.pusherBody.interpolatedPosition);
-    // Guide and reticle are world-fixed now, so they only move when the aim does - no per-frame
-    // rebuild of the arc, which is what made it ride the stroke in the first place.
-    if (!this.quality.reducedMotion) {
-      this.pinHover = 1.02 + Math.sin(this.elapsed * 2.6) * 0.07;
-      this.launcherPin.position.y = GAME.upperTrayY + GAME.upperTrayHeight / 2 + 0.02 + this.pinHover;
-      this.launcherPin.rotation.y = this.elapsed * 0.9;
-      this.launcherBeacon.position.y = this.launcherPin.position.y;
-      this.launcherBeacon.material.opacity = 0.5 + Math.sin(this.elapsed * 2.6) * 0.14;
+    const exposure = this.closed ? 0.35 : 1.05;
+    if (this.renderer.toneMappingExposure !== exposure) {
+      this.renderer.toneMappingExposure = THREE.MathUtils.damp(this.renderer.toneMappingExposure, exposure, 6, frameDelta);
+      if (Math.abs(this.renderer.toneMappingExposure - exposure) < 0.01) this.renderer.toneMappingExposure = exposure;
     }
+    if (this.fold !== this.foldTarget) {
+      // About a fifth of a second to settle; snaps the last sliver so it stops re-posing.
+      this.fold = THREE.MathUtils.damp(this.fold, this.foldTarget, 12, frameDelta);
+      if (Math.abs(this.fold - this.foldTarget) < 0.001) this.fold = this.foldTarget;
+      this.poseCamera();
+    }
+    // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).
+    if (!this.settling) this.updateBonus(delta);
+    this.updateHits(delta);
+    this.syncCoinInstances();
+    this.updateParticles(delta);
+    this.pusherBody.lerpPose(this.world.alpha, this.pusherMesh.position);
+    this.bladeBody.lerpPose(this.world.alpha, this.bladeMesh.position);
+    const renderStart = performance.now();
     if (this.composer) this.composer.render(); else this.renderer.render(this.scene, this.camera);
+    this.lastRenderMs = performance.now() - renderStart;
   };
 
   destroy() {
@@ -2805,6 +3031,10 @@ export class CoinPusher {
     for (const shot of this.launching) shot.coin.mesh.visible = false;
     this.launching.length = 0;
     for (let index = this.activeCoins.length - 1; index >= 0; index -= 1) this.recycleCoin(index);
+    // Last: everything above still talks to the bodies, and a freed world's bodies are dangling.
+    this.world?.free();
+    // The scene walk below frees geometry and materials, not an instanced mesh's own buffers.
+    for (const batch of Object.values(this.coinBatches ?? {})) batch.dispose();
     const geometries = new Set();
     const materials = new Set();
     const textures = new Set();

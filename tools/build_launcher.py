@@ -83,7 +83,10 @@ def build():
     box("launcher_breech", body, (-0.30, 0.30), (0.16, 0.95), (-0.92, -0.34), bevel=0.04)
     # Lit on the rear face, not on top: a -z face still carries cos 0.58 of the view direction,
     # where the top caps that used to do this job sat above a body nobody could see.
-    box("launcher_core", neon_gold, (-0.11, 0.11), (0.34, 0.80), (-0.96, -0.92))
+    # Matte gold, not neon: the rear face is the launcher's largest surface square to the camera,
+    # and at neon_gold_soft its bloom burned it to white and the launcher read as a lamp. Lit
+    # lightly it reads as a gold plate, and the code's breathing pulse still has an emissive to ride.
+    box("launcher_core", materials["trim_gold_matte"], (-0.11, 0.11), (0.34, 0.80), (-0.96, -0.92))
     mirrored("launcher_vent", neon_teal, (0.19, 0.26), (0.28, 0.86), (-0.95, -0.92))
     # Wings forward of the block, along the barrel, stepping the silhouette down towards the
     # muzzle. Their caps are a thin line now rather than the pair of bars that read as the whole

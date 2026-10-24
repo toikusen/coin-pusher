@@ -3,47 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#040a12" />
+    <meta name="theme-color" content="#0e1624" />
     <meta name="description" content="一款有任務、連擊與特殊硬幣的 3D 推幣機遊戲。" />
     <title>Coin Pusher — 經典推幣</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Rajdhani:wght@500;600;700&family=Noto+Sans+TC:wght@400;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Noto+Sans+TC:wght@400;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <main class="shell" aria-labelledby="game-title">
-      <div class="ambient ambient--green" aria-hidden="true"></div>
-      <div class="ambient ambient--gold" aria-hidden="true"></div>
-
-      <section class="machine" aria-label="Coin Pusher 推幣機">
-        <div class="marquee" aria-hidden="true"></div>
-
+      <section class="machine" aria-label="推幣機">
         <header class="hud">
           <div class="brand">
-            <div class="brand__mark" aria-hidden="true">CP</div>
-            <div>
-              <h1 id="game-title">COIN PUSHER</h1>
-              <p>經典推幣 · ARCADE</p>
-            </div>
+            <div class="brand__mark" aria-hidden="true"><svg class="compass-star" viewBox="0 0 40 40" fill="none" aria-hidden="true" focusable="false"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="0.7"/><path d="m20 2 3.8 13.2L33 7l-8.2 9.2L38 20l-13.2 3.8L33 33l-9.2-8.2L20 38l-3.8-13.2L7 33l8.2-9.2L2 20l13.2-3.8L7 7l9.2 8.2L20 2Z" fill="currentColor"/><circle cx="20" cy="20" r="2.5" fill="var(--ink-900)"/></svg></div>
+            <h1 id="game-title">推幣機<span lang="en">COIN PUSHER</span></h1>
           </div>
 
-          <div class="stats" aria-label="遊戲狀態">
+          <dl class="stats" aria-label="遊戲狀態">
             <div class="stat stat--score">
-              <span>分數</span>
-              <strong id="score">0</strong>
+              <dt>分數</dt>
+              <dd id="score">0</dd>
             </div>
-            <div class="stat">
-              <span>硬幣</span>
-              <strong id="credits">50</strong>
+            <div class="stat stat--credits">
+              <dt>硬幣</dt>
+              <dd id="credits">50</dd>
             </div>
+          </dl>
+
+          <div class="hud__actions" aria-label="遊戲選項">
+            <button class="hud-button" id="helpButton" type="button" aria-label="玩法說明" title="玩法說明"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M9 8a3 3 0 1 1 5 2.2c-1.3.8-2 1.3-2 3.3"/><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"/></svg></button>
+            <button class="hud-button" id="resetButton" type="button" aria-label="重新開始" title="重新開始"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M6 8a7 7 0 1 1-1 6M6 3v5h5"/></svg></button>
           </div>
         </header>
 
         <div class="mission" id="mission" aria-label="目前任務">
-          <div class="mission__copy">
-            <span id="missionLabel">本局任務</span>
-            <strong id="missionValue">推落 0 / 25</strong>
-          </div>
+          <span class="mission__label" id="missionLabel">本局任務</span>
+          <strong class="mission__value" id="missionValue">推落 0 / 25</strong>
           <div class="mission__track" aria-hidden="true"><span id="missionBar"></span></div>
           <span class="mission__best">最高 <strong id="bestScore">0</strong></span>
         </div>
@@ -53,7 +48,7 @@
             id="gameCanvas"
             tabindex="0"
             role="application"
-            aria-label="3D 推幣機遊戲區。拖曳或用左右方向鍵移動前方發射器，按空白鍵發射。"
+            aria-label="3D 推幣機遊戲區。金幣從上方中央投入，穿過釘板落到推台上，按空白鍵投幣。"
           ></canvas>
 
           <div class="reward" id="reward" aria-hidden="true">
@@ -75,35 +70,21 @@
         </div>
 
         <footer class="controls">
-          <p class="instructions" id="instructions">拖曳定位發射器，落點固定在推板前方</p>
           <div class="control-row">
             <button class="icon-button" id="soundButton" type="button" aria-label="關閉音效" aria-pressed="true">
-              <span aria-hidden="true">♪</span>
+              <span aria-hidden="true">♪</span><span class="control-label" aria-hidden="true">音效</span>
             </button>
-            <button class="auto-button" id="autoButton" type="button" aria-pressed="false">
-              <span aria-hidden="true">↻</span><span>AUTO</span>
+            <button class="icon-button auto-button" id="autoButton" type="button" aria-pressed="false">
+              <span aria-hidden="true">↻</span><span>自動</span>
             </button>
-            <div class="aim-control" aria-label="發射器位置">
-              <button class="aim-button" id="aimLeft" type="button" aria-label="發射器向左移動">‹</button>
-              <label for="aimSlider">
-                <span>LAUNCHER POSITION</span>
-                <input id="aimSlider" type="range" min="-100" max="100" step="1" value="0" aria-valuetext="中央" />
-              </label>
-              <button class="aim-button" id="aimRight" type="button" aria-label="發射器向右移動">›</button>
-            </div>
             <button class="drop-button" id="dropButton" type="button">
-              <span class="drop-button__coin" aria-hidden="true">●</span>
-              <span class="drop-button__label">發射</span>
-              <kbd>SPACE</kbd>
+              <svg class="compass-star" viewBox="0 0 40 40" fill="none" aria-hidden="true" focusable="false"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="0.7"/><path d="m20 2 3.8 13.2L33 7l-8.2 9.2L38 20l-13.2 3.8L33 33l-9.2-8.2L20 38l-3.8-13.2L7 33l8.2-9.2L2 20l13.2-3.8L7 7l9.2 8.2L20 2Z" fill="currentColor"/><circle cx="20" cy="20" r="2.5" fill="var(--ink-900)"/></svg>
+              <span class="drop-button__label">投幣</span>
+              <kbd>空白鍵</kbd>
             </button>
           </div>
         </footer>
       </section>
-
-      <aside class="session-actions" aria-label="遊戲選項">
-        <button id="helpButton" type="button">玩法說明</button>
-        <button id="resetButton" type="button">重新開始</button>
-      </aside>
 
       <!-- Docked outside the cabinet so the sliders never cover the playfield. -->
       <div class="tune-dock">
@@ -129,9 +110,9 @@
             <legend>難度</legend>
 
             <label class="tune-control" for="tuneThickness">
-              <span>硬幣厚度</span><output id="tuneThicknessValue" for="tuneThickness">0.10</output>
+              <span>硬幣厚度</span><output id="tuneThicknessValue" for="tuneThickness">0.05</output>
             </label>
-            <input id="tuneThickness" type="range" min="0.06" max="0.34" step="0.01" value="0.1" />
+            <input id="tuneThickness" type="range" min="0.03" max="0.34" step="0.01" value="0.05" />
             <p class="tune-hint">主要旋鈕。調厚＝硬幣不易翻倒、推力傳得動＝變簡單。放手時會重排硬幣堆。</p>
 
             <label class="tune-control" for="tuneGroundFriction">
@@ -171,7 +152,7 @@
             </label>
             <input id="geoLowerLength" type="range" min="7.6" max="13" step="0.02" value="9.06" />
 
-            <p class="tune-hint">數字是機台座標的 Z 軸位置與長度（正值靠機台後方）。放開滑桿才會重排硬幣堆。下層平台能多長取決於中心：出幣口不會壓過發射器，所以中心越後面能拉越長。</p>
+            <p class="tune-hint">數字是機台座標的 Z 軸位置與長度（正值靠機台後方）。放開滑桿才會重排硬幣堆。下層平台的長度上限會隨中心位置調整。</p>
             <p class="tune-hint tune-hint--note">擋板最多只能退到下層平台的後緣：要再往後，先把下層平台的中心往後移或加長。推板長度會自動加長到蓋住擋板。</p>
             <p class="tune-hint">擋板減去上層推板中心大於 2.16 時，推板上會出現掃不到的區域，硬幣容易卡住不下來——兩者一起往後移就不會。</p>
           </fieldset>
@@ -216,15 +197,15 @@
     </main>
 
     <dialog class="onboarding" id="onboarding" aria-labelledby="onboardingTitle">
-      <div class="onboarding__art" aria-hidden="true"><span>★</span></div>
+      <div class="onboarding__art" aria-hidden="true"><svg class="compass-star" viewBox="0 0 40 40" fill="none" aria-hidden="true" focusable="false"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="0.7"/><path d="m20 2 3.8 13.2L33 7l-8.2 9.2L38 20l-13.2 3.8L33 33l-9.2-8.2L20 38l-3.8-13.2L7 33l8.2-9.2L2 20l13.2-3.8L7 7l9.2 8.2L20 2Z" fill="currentColor"/><circle cx="20" cy="20" r="2.5" fill="var(--ink-900)"/></svg></div>
       <p class="eyebrow">HOW TO PLAY</p>
-      <h2 id="onboardingTitle">瞄準、推落、連擊</h2>
+      <h2 id="onboardingTitle">投幣、推落、連擊</h2>
       <ol>
-        <li><strong>左右瞄準</strong><span>拖曳遊戲畫面或使用方向鍵，移動玩家面前的發射器。</span></li>
-        <li><strong>放心發射</strong><span>金色落點會跟著推板移動；每一枚硬幣都會落在推板安全區內。</span></li>
-        <li><strong>抓準節奏</strong><span>按空白鍵發射，趁推板後退時堆幣，更容易形成連續推落。</span></li>
+        <li><strong>穿越釘板</strong><span>金幣從上方投入，撞到釘子與彈跳器後隨機落到推台上。</span></li>
+        <li><strong>放心投幣</strong><span>按下投幣按鈕，或開啟自動投幣，讓金幣陸續落到推台上。</span></li>
+        <li><strong>抓準節奏</strong><span>按空白鍵投幣，趁推板後退時堆幣，更容易形成連續推落。</span></li>
       </ol>
-      <button class="primary-button" id="startButton" type="button">開始挑戰</button>
+      <button class="primary-button" id="startButton" type="button"><svg class="compass-star" viewBox="0 0 40 40" fill="none" aria-hidden="true" focusable="false"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="0.7"/><path d="m20 2 3.8 13.2L33 7l-8.2 9.2L38 20l-13.2 3.8L33 33l-9.2-8.2L20 38l-3.8-13.2L7 33l8.2-9.2L2 20l13.2-3.8L7 7l9.2 8.2L20 2Z" fill="currentColor"/><circle cx="20" cy="20" r="2.5" fill="var(--ink-900)"/></svg><span>開始挑戰</span></button>
       <p class="asset-credit">
         3D 寶箱、拉霸機：以 <a href="https://www.tripo3d.ai/" target="_blank" rel="noopener noreferrer">Tripo AI</a> 生成 · 已調整比例與配色
       </p>

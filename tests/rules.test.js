@@ -7,11 +7,9 @@ import {
   chargeToPower,
   chestsDue,
   coinPhase,
+  coinFallPhase,
+  NATURAL_FALL_Y,
   gildTargets,
-  launcherTargetFor,
-  launcherReachFor,
-  launcherYawFor,
-  launcherXFor,
   launchSpeedFor,
   quakeKick,
   rollSlotResult,
@@ -21,8 +19,8 @@ import {
 describe('coinPhase', () => {
   it('does not score until a coin reaches the tray', () => {
     expect(coinPhase({ counted: false, falling: false }, { y: 0, z: GAME.edgeZ - 0.1 })).toBe('cross');
-    expect(coinPhase({ counted: false, falling: true }, { y: GAME.trayY + 0.1, z: -4 })).toBeNull();
-    expect(coinPhase({ counted: false, falling: true }, { y: GAME.trayY - 0.1, z: -4 })).toBe('score');
+    expect(coinPhase({ counted: false, falling: true }, { y: GAME.trayY + 0.1, z: GAME.edgeZ + 0.3 })).toBeNull();
+    expect(coinPhase({ counted: false, falling: true }, { y: GAME.trayY - 0.1, z: GAME.edgeZ + 0.3 })).toBe('score');
   });
 
   // The bug: `cross` used to fire only on the first frame past the lip, where a coin still has
@@ -37,6 +35,33 @@ describe('coinPhase', () => {
   it('never double-counts and silently recycles escapees', () => {
     expect(coinPhase({ counted: true, falling: true }, { y: -2, z: -4 })).toBeNull();
     expect(coinPhase({ counted: false, falling: false }, { y: GAME.lostY - 1, z: 0 })).toBe('lost');
+  });
+});
+
+describe('coinFallPhase', () => {
+  const front = () => GAME.playfieldFrontZ;
+
+  it('leaves a coin hanging on the lip alone', () => {
+    const coin = { counted: false, falling: false };
+    expect(coinFallPhase(coin, { y: 0.05, z: GAME.edgeZ - 0.02 })).toBeNull();
+    // Centre past the face but still held up by the corner or the pile: not a fall yet.
+    expect(coinFallPhase(coin, { y: 0.02, z: front() - 0.05 })).toBeNull();
+  });
+
+  it('latches a coin once it has gone over and below the deck, then pays it at the tray', () => {
+    expect(coinFallPhase({ counted: false, falling: false }, { y: NATURAL_FALL_Y - 0.01, z: front() - 0.1 })).toBe('fall');
+    expect(coinFallPhase({ counted: false, falling: true }, { y: NATURAL_FALL_Y - 0.01, z: front() - 0.1 })).toBeNull();
+    expect(coinFallPhase({ counted: false, falling: true }, { y: GAME.trayY - 0.1, z: front() - 0.3 })).toBe('score');
+  });
+
+  it('does not count a coin that slips below the deck behind the face', () => {
+    expect(coinFallPhase({ counted: false, falling: false }, { y: NATURAL_FALL_Y - 0.5, z: front() + 0.2 })).toBeNull();
+  });
+
+  it('latches the fall before calling a far-dropped coin lost', () => {
+    expect(coinFallPhase({ counted: false, falling: false }, { y: GAME.lostY - 1, z: front() - 0.5 })).toBe('fall');
+    expect(coinFallPhase({ counted: false, falling: false }, { y: GAME.lostY - 1, z: 0 })).toBe('lost');
+    expect(coinFallPhase({ counted: true, falling: true }, { y: -2, z: -4 })).toBeNull();
   });
 });
 
@@ -82,58 +107,6 @@ describe('calculateReward', () => {
 
     expect(combo).toBe(single.combo);
     expect(total).toBe(single.total);
-  });
-});
-
-describe('front launcher', () => {
-  it('maps the player-facing slider symmetrically and clamps invalid input', () => {
-    expect(launcherXFor(-1)).toBeCloseTo(GAME.launcherTravelHalfWidth, 8);
-    expect(launcherXFor(1)).toBeCloseTo(-GAME.launcherTravelHalfWidth, 8);
-    expect(launcherXFor(-0.4)).toBeCloseTo(-launcherXFor(0.4), 8);
-    expect(launcherXFor(99)).toBeCloseTo(-GAME.launcherTravelHalfWidth, 8);
-    expect(launcherXFor(Number.NaN)).toBe(0);
-  });
-
-  // The target used to be pusher-local, which made the guide arc swing back and forth with the
-  // stroke. Aim moves the landing point across the playfield only; depth is fixed.
-  it('lands on one fixed depth whatever the aim', () => {
-    expect(launcherTargetFor(-1).z).toBe(GAME.dropZoneZ);
-    expect(launcherTargetFor(0.25).z).toBe(GAME.dropZoneZ);
-    expect(launcherTargetFor(1).z).toBe(GAME.dropZoneZ);
-    expect(launcherTargetFor(0.25).x).toBeCloseTo(launcherXFor(0.25), 8);
-  });
-
-  // The camera sits 5.5 in front of the rail, so a portrait window frames less than the rail's
-  // width and full aim has to stop short of it - the bug this replaced put the muzzle off screen.
-  it('never reaches past what the window frames', () => {
-    const depth = 5.55;
-    const wide = launcherReachFor(62, 16 / 9, depth, 0.5);
-    const tall = launcherReachFor(62, 0.5, depth, 0.5);
-    expect(wide).toBeCloseTo(GAME.launcherTravelHalfWidth, 8);
-    expect(tall).toBeLessThan(GAME.launcherTravelHalfWidth);
-    expect(tall).toBeCloseTo(Math.tan((62 * Math.PI) / 360) * depth * 0.5 - 0.5, 8);
-    expect(launcherReachFor(62, 0.02, depth, 0.5)).toBe(0);
-    expect(launcherXFor(1, tall)).toBeCloseTo(-tall, 8);
-  });
-
-  // The reach clamp moves the launcher, never the landing spread: a shot has to be able to reach
-  // the playfield's edges on any window, or a narrow one quietly makes the game easier.
-  it('keeps the full landing spread whatever the launcher can reach', () => {
-    expect(launcherTargetFor(-1).x).toBeCloseTo(GAME.launcherTravelHalfWidth, 8);
-    expect(launcherTargetFor(1).x).toBeCloseTo(-GAME.launcherTravelHalfWidth, 8);
-  });
-
-  // What covers the gap the clamp opens up: the barrel turns towards the drop point.
-  it('turns the barrel towards the drop point and caps how far it swings', () => {
-    const cap = (GAME.launcherFanDegrees * Math.PI) / 180;
-    expect(launcherYawFor(0, 0)).toBe(0);
-    // Parked short of its target, so it points outwards - and back the other way on the far side.
-    expect(launcherYawFor(2, 3.45)).toBeCloseTo(Math.atan2(1.45, GAME.dropZoneZ - GAME.launcherMuzzleZ), 8);
-    expect(launcherYawFor(-2, -3.45)).toBeCloseTo(-launcherYawFor(2, 3.45), 8);
-    // A launcher 2.3 short of its target is the worst a portrait phone produced; still under cap.
-    expect(launcherYawFor(1.15, 3.45)).toBeLessThan(cap);
-    expect(launcherYawFor(0, 99)).toBeCloseTo(cap, 8);
-    expect(launcherYawFor(0, -99)).toBeCloseTo(-cap, 8);
   });
 });
 

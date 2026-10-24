@@ -38,9 +38,9 @@ describe('launcher model', () => {
   it('ships no textures and borrows the machine\'s own materials', () => {
     expect(gltf.images ?? []).toHaveLength(0);
     for (const material of gltf.materials) {
-      // Soft variants throughout: this model sits nearest the camera, where the cabinet's
-      // strengths bloom over its own silhouette.
-      expect(['shell_raised', 'neon_teal_soft', 'neon_gold_soft']).toContain(material.name);
+      // Soft or matte variants throughout: this model sits nearest the camera, where the
+      // cabinet's strengths bloom over its own silhouette.
+      expect(['shell_raised', 'neon_teal_soft', 'neon_gold_soft', 'trim_gold_matte']).toContain(material.name);
     }
     expect(gltf.extensionsUsed).toContain('KHR_materials_emissive_strength');
   });

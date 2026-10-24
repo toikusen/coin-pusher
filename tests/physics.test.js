@@ -1,15 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import * as CANNON from 'cannon-es';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { Vector3 } from 'three';
+import { initPhysics } from '../src/game/world.js';
+import { BED_WIDTH, GLASS_X, FIXED_STEP, createMachine, createWorld, spawnCoin, spawnChest } from './machine.js';
 import { GAME } from '../src/game/config.js';
-import { landingXFor, launchSpeedFor } from '../src/game/rules.js';
+import { coinFallPhase, landingXFor, launchSpeedFor } from '../src/game/rules.js';
 import {
   COIN_COIN_FRICTION,
   COIN_GROUND_FRICTION,
+  COIN_COLLIDER_PAD,
   COIN_HEIGHT,
   COIN_MASS,
   COIN_PUSHER_FRICTION,
   COIN_RADIUS,
-  CONTACT_SOLVER_OPTIONS,
   LOWER_SEED_COUNT,
   lowerSlotsPerLayer,
   TUNING_DEFAULTS,
@@ -18,172 +20,118 @@ import {
   createCoinBody,
   nudgeOverLip,
   pusherMotionAt,
+  onLowerBed,
+  lowerBladeReachZ,
+  buriedCoinIndex,
+  nextCoinCeiling,
+  MIN_COIN_CEILING,
   seedPosition,
   settleChestOnLowerBed,
-  stopRailCoinAtWall,
-  syncFrictionGravity,
 } from '../src/game/physics.js';
 
-// What getQualityProfile seeds on a normal device: the whole lower pile plus a couple of layers
-// on the tray. Derived, so widening the machine moves the seed layout and these bounds together.
-const SEED_COUNT = LOWER_SEED_COUNT + 12;
-// Cabinet parts the pile is bounded by, cut from the same half-width CoinPusher cuts them from.
-const BED_WIDTH = GAME.playfieldHalfWidth * 2 + 0.15;
-const GLASS_X = GAME.playfieldHalfWidth + 0.125;
+// What getQualityProfile seeds (seedCount 100): the whole lower pile plus 30 riding the tray.
+const SEED_COUNT = LOWER_SEED_COUNT + 30;
+const worlds = [];
+const track = (world) => { worlds.push(world); return world; };
+const testWorld = (options) => track(createWorld(options));
+const testMachine = () => {
+  const machine = createMachine();
+  track(machine.world);
+  return machine;
+};
+beforeAll(async () => { await initPhysics(); });
+afterEach(() => { for (const world of worlds.splice(0)) world.free(); });
+const advance = (world, seconds) => {
+  for (let i = 0; i < Math.round(seconds / world.fixedStep); i += 1) world.stepOnce();
+};
+const addFloor = (world) => world.addStaticBox({ x: 2.5, y: 0.25, z: 3 }, { x: 0, y: -0.25, z: 0 });
+const expectVector = (actual, expected) => {
+  for (const axis of ['x', 'y', 'z']) expect(actual[axis]).toBeCloseTo(expected[axis], 6);
+};
 
 describe('coin collision bodies', () => {
-  it('creates a unique Y-up collision shape for every coin', () => {
-    const material = new CANNON.Material('coin');
-    const first = createCoinBody(material);
-    const second = createCoinBody(material);
-    const min = new CANNON.Vec3();
-    const max = new CANNON.Vec3();
-    first.shapes[0].calculateWorldAABB(new CANNON.Vec3(), new CANNON.Quaternion(), min, max);
-
-    expect(first.shapes[0]).not.toBe(second.shapes[0]);
-    expect(first.mass).toBe(COIN_MASS);
-    expect(first.shapes[0].body).toBe(first);
-    expect(second.shapes[0].body).toBe(second);
-    expect(max.y - min.y).toBeCloseTo(COIN_HEIGHT, 5);
-    expect(max.x - min.x).toBeGreaterThan(COIN_RADIUS * 1.9);
-  });
-
-  it('lands on the machine shelf instead of tunnelling through it', () => {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, 0), allowSleep: true });
-    syncFrictionGravity(world, 1 / 60);
-    world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = 12;
-    const groundMaterial = new CANNON.Material('ground');
-    const coinMaterial = new CANNON.Material('coin');
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, { friction: 0.5, restitution: 0.03 }));
-
-    const shelf = new CANNON.Body({ mass: 0, material: groundMaterial });
-    shelf.addShape(new CANNON.Box(new CANNON.Vec3(2.5, 0.25, 3.3)));
-    shelf.position.set(0, -0.25, 0.2);
-    world.addBody(shelf);
-
-    const coin = createCoinBody(coinMaterial);
-    coin.position.set(0, 4, 0);
-    world.addBody(coin);
-    for (let frame = 0; frame < 240; frame += 1) world.step(1 / 60);
-
-    expect(coin.position.y).toBeGreaterThan(0);
-    expect(coin.position.y).toBeLessThan(0.2);
+  it('creates independent Y-up coins that land without tunnelling through the shelf', () => {
+    const world = testWorld({ tilt: 0 });
+    addFloor(world);
+    const first = spawnCoin(world, { x: -1, y: 4, z: 0 });
+    const second = spawnCoin(world, { x: 1, y: 4, z: 0 });
+    expect(first).not.toBe(second);
+    advance(world, 4);
+    for (const coin of [first, second]) {
+      expect(coin.position.y).toBeGreaterThan(0);
+      expect(coin.position.y).toBeLessThan(0.2);
+      // Rests on its padded collider, sunk into the shelf about as far as the padding.
+      expect(coin.position.y).toBeCloseTo((COIN_HEIGHT + COIN_COLLIDER_PAD) / 2, 2);
+    }
   });
 
   it('keeps table friction consistent across fixed-step rates', () => {
     const travelAt = (fixedStep) => {
-      const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, 0) });
-      world.solver.iterations = 32;
-      syncFrictionGravity(world, fixedStep);
-      const groundMaterial = new CANNON.Material('ground');
-      const coinMaterial = new CANNON.Material('coin');
-      world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, {
-        ...CONTACT_SOLVER_OPTIONS,
-        friction: COIN_GROUND_FRICTION,
-      }));
-      const floor = new CANNON.Body({ mass: 0, material: groundMaterial });
-      floor.addShape(new CANNON.Box(new CANNON.Vec3(2, 0.2, 3)));
-      floor.position.y = -0.2;
-      world.addBody(floor);
-      const coin = createCoinBody(coinMaterial);
-      coin.position.set(0, COIN_HEIGHT / 2 + 0.01, 1);
-      coin.velocity.z = -1;
-      world.addBody(coin);
-      for (let step = 0; step < Math.round(2 / fixedStep); step += 1) world.step(fixedStep);
+      const world = testWorld({ fixedStep, tilt: 0 });
+      addFloor(world);
+      const coin = spawnCoin(world, { x: 0, y: COIN_HEIGHT / 2 + 0.01, z: 1 });
+      coin.setVelocity({ x: 0, y: 0, z: -1 });
+      advance(world, 2);
       return 1 - coin.position.z;
     };
-
-    const travel60 = travelAt(1 / 60);
+    const travel60 = travelAt(FIXED_STEP);
     const travel120 = travelAt(1 / 120);
-    // Before manifold calibration both values were about 0.025 m: the coin behaved as glued.
-    expect(travel60).toBeGreaterThan(COIN_RADIUS / 3);
-    expect(travel120).toBeGreaterThan(COIN_RADIUS / 3);
-    expect(Math.abs(travel60 - travel120)).toBeLessThan(COIN_RADIUS / 3);
+    // A coin at 1 u/s on a flat table stops after v^2 / (2 mu g): the coefficient means what it says.
+    const expected = 1 / (2 * TUNING_DEFAULTS.groundFriction * 24);
+    expect(travel60).toBeCloseTo(expected, 1);
+    expect(travel120).toBeCloseTo(expected, 1);
+    expect(Math.abs(travel60 - travel120)).toBeLessThan(expected * 0.2);
   });
 
   it('puts a dense multi-layer stack fully to sleep', () => {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, 0), allowSleep: true });
-    syncFrictionGravity(world, 1 / 120);
-    world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = 32;
-    const groundMaterial = new CANNON.Material('ground');
-    const coinMaterial = new CANNON.Material('coin');
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_GROUND_FRICTION,
-    }));
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, coinMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_COIN_FRICTION,
-    }));
-    const floor = new CANNON.Body({ mass: 0, material: groundMaterial });
-    floor.addShape(new CANNON.Box(new CANNON.Vec3(2, 0.2, 2)));
-    floor.position.y = -0.2;
-    world.addBody(floor);
-
+    const world = testWorld({ tilt: 0 });
+    addFloor(world);
     const coins = [];
     for (let layer = 0; layer < 3; layer += 1) {
       for (let row = 0; row < 3; row += 1) {
         for (let column = 0; column < 3; column += 1) {
-          const body = createCoinBody(coinMaterial);
-          body.position.set(
-            (column - 1) * 0.74 + (layer % 2) * 0.025,
-            0.07 + layer * 0.135,
-            (row - 1) * 0.74 - (layer % 2) * 0.025,
-          );
-          body.quaternion.setFromAxisAngle(
-            new CANNON.Vec3(1, 0, 1).unit(),
-            ((row + column + layer) % 2 === 0 ? 1 : -1) * 0.035,
-          );
-          world.addBody(body);
-          coins.push(body);
+          const angle = ((row + column + layer) % 2 === 0 ? 1 : -1) * 0.035;
+          coins.push(spawnCoin(world, {
+            x: (column - 1) * 0.74 + (layer % 2) * 0.025,
+            y: 0.07 + layer * 0.135,
+            z: (row - 1) * 0.74 - (layer % 2) * 0.025,
+          }, { x: Math.sin(angle / 2) / Math.SQRT2, y: 0,
+            z: Math.sin(angle / 2) / Math.SQRT2, w: Math.cos(angle / 2) }));
         }
       }
     }
-
-    for (let frame = 0; frame < 10 * 120; frame += 1) world.step(1 / 120);
-
-    expect(coins.every((body) => body.sleepState === CANNON.Body.SLEEPING)).toBe(true);
-    expect(coins.every((body) => body.velocity.isZero() && body.angularVelocity.isZero())).toBe(true);
+    advance(world, 10);
+    expect(coins.every((body) => body.sleeping)).toBe(true);
+    for (const body of coins) {
+      expectVector(body.velocity, { x: 0, y: 0, z: 0 });
+      expectVector(body.angularVelocity, { x: 0, y: 0, z: 0 });
+    }
   });
 });
 
 describe('bonus chest landing', () => {
   it('absorbs forward momentum once when the chest reaches the lower bed', () => {
-    const body = new CANNON.Body({ mass: GAME.chestMass });
-    body.velocity.set(0.4, -2, -3);
-    body.angularVelocity.set(2, 4, 6);
+    const body = spawnChest(testWorld(), { x: 0, y: 1, z: GAME.edgeZ + 0.1 });
+    body.setVelocity({ x: 0.4, y: -2, z: -3 });
+    body.setAngularVelocity({ x: 2, y: 4, z: 6 });
     const drop = { lowerBedLanded: false };
-
-    body.position.set(0, 1, GAME.edgeZ + 0.1);
     expect(settleChestOnLowerBed(body, drop, 0.4, 0.45)).toBe(false);
     expect(drop.lowerBedLanded).toBe(false);
-
-    body.position.z = GAME.edgeZ + 0.45 + COIN_RADIUS + 1;
-    body.position.y = 0.4;
+    body.setPose({ x: 0, y: 0.4, z: GAME.edgeZ + 0.45 + COIN_RADIUS + 1 });
     expect(settleChestOnLowerBed(body, drop, 0.4, 0.45)).toBe(true);
     expect(drop.lowerBedLanded).toBe(true);
     expect(body.velocity.z).toBe(0);
-    expect(body.angularVelocity.almostEquals(new CANNON.Vec3(0.5, 1, 1.5))).toBe(true);
-
-    body.velocity.z = -1;
+    expectVector(body.angularVelocity, { x: 0.5, y: 1, z: 1.5 });
+    body.setVelocity({ x: 0, y: 0, z: -1 });
     expect(settleChestOnLowerBed(body, drop, 0.4, 0.45)).toBe(false);
     expect(body.velocity.z).toBe(-1);
   });
 
-  // The bug: a chest riding two or more coin layers never dips low enough to latch on the way
-  // across, so its first dip is the moment it tips over the lip. That used to be taken for a
-  // landing - teleported 0.84 back onto the bed with its drop cancelled, so the chest fell off
-  // the front and the slot machine did not spin.
   it('leaves a chest that is already over the lip to its payout', () => {
-    const body = new CANNON.Body({ mass: GAME.chestMass });
-    const drop = { lowerBedLanded: false };
     const startZ = GAME.edgeZ - 0.05;
-    body.position.set(0, 0.4, startZ);
-    body.velocity.set(0, -1.5, -3);
-
-    expect(settleChestOnLowerBed(body, drop, 0.4, 0.45)).toBe(false);
+    const body = spawnChest(testWorld(), { x: 0, y: 0.4, z: startZ });
+    body.setVelocity({ x: 0, y: -1.5, z: -3 });
+    expect(settleChestOnLowerBed(body, { lowerBedLanded: false }, 0.4, 0.45)).toBe(false);
     expect(body.position.z).toBe(startZ);
     expect(body.velocity.z).toBe(-3);
   });
@@ -191,20 +139,20 @@ describe('bonus chest landing', () => {
 
 describe('payout lip nudge', () => {
   it('only adds the motion a stalled body is missing', () => {
-    const stalled = new CANNON.Body({ mass: COIN_MASS });
-    stalled.velocity.set(0.5, 0, 0.2);
-    stalled.sleep();
+    const world = testWorld({ tilt: 0 });
+    addFloor(world);
+    const stalled = spawnCoin(world, { x: 0, y: 0.06, z: 0 });
+    advance(world, 4);
+    expect(stalled.sleeping).toBe(true);
     nudgeOverLip(stalled);
-    expect(stalled.velocity.almostEquals(new CANNON.Vec3(0, -1.5, -3))).toBe(true);
-    expect(stalled.sleepState).not.toBe(CANNON.Body.SLEEPING);
-
-    // Re-applied every frame of the fall, so it must never brake one already in the air.
-    const falling = new CANNON.Body({ mass: COIN_MASS });
-    falling.velocity.set(0, -8, -4);
-    falling.angularVelocity.set(1, 2, 3);
+    expectVector(stalled.velocity, { x: 0, y: -1.5, z: -3 });
+    expect(stalled.sleeping).toBe(false);
+    const falling = spawnCoin(world, { x: 1, y: 4, z: 0 });
+    falling.setVelocity({ x: 0, y: -8, z: -4 });
+    falling.setAngularVelocity({ x: 1, y: 2, z: 3 });
     nudgeOverLip(falling);
-    expect(falling.velocity.almostEquals(new CANNON.Vec3(0, -8, -4))).toBe(true);
-    expect(falling.angularVelocity.almostEquals(new CANNON.Vec3(1, 2, 3))).toBe(true);
+    expectVector(falling.velocity, { x: 0, y: -8, z: -4 });
+    expectVector(falling.angularVelocity, { x: 1, y: 2, z: 3 });
   });
 });
 
@@ -218,53 +166,54 @@ describe('live tuning', () => {
     expect(TUNING_DEFAULTS.tilt).toBe(GAME.payoutTilt);
   });
 
-  it('rebuilds the collision shape and inertia when thickness changes', () => {
-    const body = createCoinBody(new CANNON.Material('coin'));
-    expect(body.shapes[0].height).toBeCloseTo(COIN_HEIGHT, 8);
-    const thinInvInertiaX = body.invInertia.x;
-
+  it('updates thickness, mass and inertia without leaving a stale collision shape', () => {
+    const world = testWorld({ tilt: 0 });
+    addFloor(world);
+    const body = spawnCoin(world, { x: 0, y: 1, z: 0 });
+    world.stepOnce();
+    const thinInertiaX = body.rb.principalInertia().x;
     applyCoinTuning(body, { ...TUNING_DEFAULTS, thickness: 0.3, mass: 0.2 }, true);
-
-    // One shape, not two: a stale shape left in place would collide alongside the new one.
-    expect(body.shapes).toHaveLength(1);
-    expect(body.shapes[0].height).toBeCloseTo(0.3, 8);
-    expect(body.mass).toBe(0.2);
-    expect(body.invMass).toBeCloseTo(5, 8);
-    // Thicker and heavier: harder to spin about a diameter, which is what stops coins tipping.
-    expect(body.invInertia.x).toBeLessThan(thinInvInertiaX);
+    advance(world, 4);
+    expect(body.position.y).toBeCloseTo((0.3 + COIN_COLLIDER_PAD) / 2, 2);
+    expect(body.collider.mass()).toBeCloseTo(0.2, 6);
+    expect(body.rb.principalInertia().x).toBeGreaterThan(thinInertiaX);
   });
 
   it('leaves the shape alone when only feel knobs move', () => {
-    const body = createCoinBody(new CANNON.Material('coin'));
-    const shape = body.shapes[0];
+    const body = createCoinBody(testWorld());
+    const shape = body.collider;
     applyCoinTuning(body, { ...TUNING_DEFAULTS, linearDamping: 0.4, angularDamping: 0.9 });
-    expect(body.shapes[0]).toBe(shape);
-    expect(body.linearDamping).toBe(0.4);
-    expect(body.angularDamping).toBe(0.9);
+    expect(body.collider).toBe(shape);
+    expect(body.rb.linearDamping()).toBeCloseTo(0.4, 6);
+    expect(body.rb.angularDamping()).toBeCloseTo(0.9, 6);
   });
 });
 
 describe('seedPosition', () => {
-  it('lays out a sparse single-layer lower bed', () => {
+  // One layer while the bed is long enough to hold the seed, whole layers stacked once it is not -
+  // which the default bed now is: shortened to keep the tray back, it holds one row of 10, and the
+  // stacked 14 measured better than seeding 10 or squeezing in a second row (that spilled at load).
+  const seedLayers = () => Math.ceil(LOWER_SEED_COUNT / lowerSlotsPerLayer());
+
+  it('lays out the lower bed in as few layers as its slots allow', () => {
     const pile = Array.from({ length: LOWER_SEED_COUNT }, (_, index) => seedPosition(index, 1234));
     const layers = [...new Set(pile.map((coin) => coin.y))].sort((a, b) => a - b);
 
-    expect(layers).toHaveLength(1);
+    expect(layers).toHaveLength(seedLayers());
     expect(pile).toHaveLength(LOWER_SEED_COUNT);
-    expect(LOWER_SEED_COUNT).toBeLessThan(lowerSlotsPerLayer());
     expect(Math.min(...pile.map((coin) => coin.z)) - COIN_RADIUS)
       .toBeGreaterThan(GAME.playfieldFrontZ);
   });
 
   // The gaps vary between resets instead of always leaving the same lanes open, but every
-  // lower coin must remain in a unique slot on the one allowed layer.
-  it('varies the gaps without stacking or duplicating a lower slot', () => {
+  // lower coin must remain in a unique slot, and only the layers the slot count forces exist.
+  it('varies the gaps without stacking more than needed or duplicating a lower slot', () => {
     for (let seed = 0; seed < 50; seed += 1) {
       const pile = Array.from({ length: LOWER_SEED_COUNT }, (_, i) => seedPosition(i, seed * 7919));
       const layers = [...new Set(pile.map((coin) => coin.y))].sort((a, b) => a - b);
-      const positions = new Set(pile.map((coin) => `${coin.x.toFixed(5)}:${coin.z.toFixed(5)}`));
+      const positions = new Set(pile.map((coin) => `${coin.x.toFixed(5)}:${coin.y.toFixed(5)}:${coin.z.toFixed(5)}`));
 
-      expect(layers).toHaveLength(1);
+      expect(layers).toHaveLength(seedLayers());
       expect(positions.size).toBe(LOWER_SEED_COUNT);
     }
   });
@@ -407,17 +356,21 @@ describe('launcher handoff', () => {
 });
 
 describe('machine proportions', () => {
-  it('moves the upper pusher at least six coin diameters per cycle', () => {
-    expect(GAME.pusherAmplitude * 2).toBeGreaterThanOrEqual(COIN_RADIUS * 12);
+  // Down from six diameters: the stroke was shortened on request because the tray reached too far
+  // into the lower half. The real guard is "tray drainage" - this only stops a slip below what was
+  // measured (0.9, with the dead span shortened to 2.0 to keep the force chain; 0.8 failed).
+  it('moves the upper pusher at least two and a half coin diameters per cycle', () => {
+    expect(GAME.pusherAmplitude * 2).toBeGreaterThanOrEqual(COIN_RADIUS * 5);
   });
 
-  it('fits a two-and-a-half-coin upper travel strip inside the cabinet', () => {
+  // At least two and a half coins: with the 0.27 coin the same 1.8 strip holds over three.
+  it('fits at least a two-and-a-half-coin upper travel strip inside the cabinet', () => {
     const trayLipAtRetreat = GAME.pusherOriginZ + GAME.pusherAmplitude - GAME.pusherDepth / 2;
     const visibleStrip = GAME.scraperZ - 0.08 - trayLipAtRetreat;
     const scraperBackEdge = GAME.scraperZ + 0.08;
     const backWallFront = GAME.playfieldBackZ - 0.075;
 
-    expect(visibleStrip).toBeCloseTo(COIN_RADIUS * 5, 8);
+    expect(visibleStrip).toBeGreaterThanOrEqual(COIN_RADIUS * 5);
     expect(scraperBackEdge).toBeLessThan(backWallFront);
   });
 
@@ -461,15 +414,17 @@ describe('sweep coverage', () => {
   const scraperReach = GAME.scraperZ - 0.08 - COIN_RADIUS
     - (GAME.pusherOriginZ + GAME.pusherAmplitude);
   // Furthest forward the blade can leave a coin's centre on the lower bed.
-  const bladeReach = GAME.pusherOriginZ - GAME.pusherAmplitude
-    - GAME.pusherDepth / 2 - 0.07 + COIN_RADIUS;
+  const bladeReach = lowerBladeReachZ() - 0.07 + COIN_RADIUS;
 
   // The old 1.5-diameter ceiling was measured with a stale test pusher that omitted the moving
   // rear extension. Once the fixture matched the real tray, the end-to-end payout guard cleared
   // a two-diameter span without gridlocking. Keep this ceiling tied to that behavioral check.
-  it('leaves at most two coins of tray the scraper cannot reach', () => {
+  // In world units now: two 0.36 coins, which is what the end-to-end payout guard cleared. The
+  // 0.27 coin fits nearly three into the same span; the drainage run is what says the tray still
+  // drains through it, so this only holds the span where that run measured it.
+  it('leaves at most the calibrated span of tray the scraper cannot reach', () => {
     const trayFront = -GAME.pusherDepth / 2;
-    expect(scraperReach - trayFront).toBeLessThanOrEqual(coinDiameter * 2);
+    expect(scraperReach - trayFront).toBeLessThanOrEqual(1.6);
   });
 
   // The bonus chest lands on that same tray and is swept by the same scraper, so it is bound by
@@ -495,58 +450,40 @@ describe('sweep coverage', () => {
   });
 
   it('makes the bonus chest resist a shove at least eighteen times more than a coin', () => {
-    const coin = createCoinBody(new CANNON.Material('coin'));
-    const chest = new CANNON.Body({ mass: GAME.chestMass });
-    const shove = new CANNON.Vec3(0, 0, -0.9);
-
-    coin.applyImpulse(shove);
-    chest.applyImpulse(shove);
-
+    const world = testWorld();
+    const coin = spawnCoin(world, { x: 0, y: 1, z: 0 });
+    const chest = spawnChest(world, { x: 2, y: 1, z: 0 });
+    const shove = { x: 0, y: 0, z: -0.9 };
+    coin.rb.applyImpulse(shove, true);
+    chest.rb.applyImpulse(shove, true);
+    expect(Math.abs(coin.velocity.z)).toBeGreaterThan(0);
+    expect(Math.abs(chest.velocity.z)).toBeGreaterThan(0);
     expect(Math.abs(chest.velocity.z)).toBeLessThanOrEqual(Math.abs(coin.velocity.z) / 18);
   });
 
   it('stops the bonus chest within half a coin diameter after landing', () => {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, -GAME.payoutTilt) });
-    syncFrictionGravity(world, 1 / 120);
-    world.solver.iterations = 32;
-    const groundMaterial = new CANNON.Material('ground');
-    const chestMaterial = new CANNON.Material('chest');
-    world.addContactMaterial(new CANNON.ContactMaterial(chestMaterial, groundMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_GROUND_FRICTION * GAME.chestFrictionScale,
-    }));
-
-    const floor = new CANNON.Body({ mass: 0, material: groundMaterial });
-    floor.addShape(new CANNON.Box(new CANNON.Vec3(2.5, 0.25, 3)));
-    floor.position.y = -0.25;
-    world.addBody(floor);
-
-    const chestHeight = GAME.chestWidth * 0.7;
-    const chest = new CANNON.Body({ mass: GAME.chestMass, material: chestMaterial });
-    chest.addShape(new CANNON.Box(new CANNON.Vec3(
-      GAME.chestWidth / 2,
-      chestHeight / 2,
-      GAME.chestWidth * 0.74 / 2,
-    )));
-    chest.linearDamping = GAME.chestLinearDamping;
-    chest.angularDamping = GAME.chestAngularDamping;
-    chest.position.set(0, chestHeight / 2 + 0.01, 1);
-    chest.velocity.z = -2;
-    chest.angularVelocity.y = 1.8;
-    world.addBody(chest);
-
+    const world = testWorld();
+    addFloor(world);
+    const chest = spawnChest(world, { x: 0, y: GAME.chestWidth * 0.7 / 2 + 0.01, z: 1 });
+    chest.setVelocity({ x: 0, y: 0, z: -2 });
+    chest.setAngularVelocity({ x: 0, y: 1.8, z: 0 });
     const startZ = chest.position.z;
-    for (let step = 0; step < 240; step += 1) world.step(1 / 120);
-
+    advance(world, 2);
     expect(startZ - chest.position.z).toBeLessThan(COIN_RADIUS);
   });
 
   // The blade does not need to touch the lip, but the remaining span must fit a short connected
   // force chain. The earlier five-plus-diameter gap split the lower pile into islands: the blade
   // compressed the rear island while the front row never received a useful impulse.
+  // In world units now, not diameters: the 0.27 coin and the three-layer seed fill this span with
+  // a packed pile, so it is no longer a row of loose coins that can part into islands. 2.0 is the
+  // span the drainage run (below) was calibrated at; widen it and that run has to be re-measured.
+  // 2.0 -> 2.7 with the lower blade on its own 0.65 stroke (GAME.lowerBladeAmplitude): the longer
+  // span is the point - the pile has to build into a clump before it reaches the lip - and the
+  // drainage run was re-measured with it.
   it('keeps the lower dead span within a short force chain', () => {
     const frontRestingCentre = GAME.playfieldFrontZ + COIN_RADIUS;
-    expect(bladeReach - frontRestingCentre).toBeLessThanOrEqual(coinDiameter * 3.5);
+    expect(bladeReach - frontRestingCentre).toBeLessThanOrEqual(2.7);
   });
 
   // A coin leaving the tray must land behind the blade, not in front of it where the moving
@@ -558,37 +495,12 @@ describe('sweep coverage', () => {
   });
 
   it('stops a rail coin bounced above the visible scraper from reaching the rear deck', () => {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, 0) });
-    syncFrictionGravity(world, 1 / 120);
-    world.solver.iterations = 32;
-    const groundMaterial = new CANNON.Material('ground');
-    const coinMaterial = new CANNON.Material('coin');
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_GROUND_FRICTION,
-    }));
-
-    const tray = new CANNON.Body({ mass: 0, material: groundMaterial });
-    tray.addShape(new CANNON.Box(new CANNON.Vec3(BED_WIDTH / 2, GAME.upperTrayHeight / 2, 2)));
-    tray.position.set(0, GAME.upperTrayY, GAME.scraperZ - 0.3);
-    world.addBody(tray);
-
-    const trayTopY = GAME.upperTrayY + GAME.upperTrayHeight / 2;
-    const guardHeight = GAME.scraperGuardTopY - trayTopY;
-    const guard = new CANNON.Body({ mass: 0, material: groundMaterial });
-    guard.addShape(new CANNON.Box(new CANNON.Vec3(BED_WIDTH / 2, guardHeight / 2, 0.08)));
-    guard.position.set(0, trayTopY + guardHeight / 2, GAME.scraperZ);
-    world.addBody(guard);
-
-    // A pile impact can leave a rail coin airborne above the 1.39 m visible plate. This pose
-    // reproduces the old escape: without the taller guard it settles at z ~= 2.38 behind it.
-    const coin = createCoinBody(coinMaterial);
-    coin.position.set(0, 1.6, GAME.scraperZ - 0.6);
-    coin.velocity.set(0, 0, 6);
-    world.addBody(coin);
+    const { world } = testMachine();
+    const coin = spawnCoin(world, { x: 0, y: 1.6, z: GAME.scraperZ - 0.6 });
+    coin.setVelocity({ x: 0, y: 0, z: 6 });
     let furthestZ = coin.position.z;
-    for (let step = 0; step < 120; step += 1) {
-      world.step(1 / 120);
+    for (let step = 0; step < 60; step += 1) {
+      world.stepOnce();
       furthestZ = Math.max(furthestZ, coin.position.z);
     }
 
@@ -627,102 +539,32 @@ describe('fixed rear deck', () => {
   });
 
   it('leaves the upper pile in place when nobody drops a coin', () => {
-    const world = new CANNON.World({
-      gravity: new CANNON.Vec3(0, -24, -GAME.payoutTilt),
-      allowSleep: true,
-    });
-    syncFrictionGravity(world, 1 / 120);
-    world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = 32;
-    world.defaultContactMaterial.contactEquationStiffness = 1e7;
-    world.defaultContactMaterial.contactEquationRelaxation = 4;
-
-    const groundMaterial = new CANNON.Material('ground');
-    const pusherMaterial = new CANNON.Material('pusher');
-    const coinMaterial = new CANNON.Material('coin');
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_GROUND_FRICTION,
-    }));
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, coinMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_COIN_FRICTION,
-    }));
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, pusherMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_PUSHER_FRICTION,
-    }));
-
-    const addStatic = (width, height, depth, x, y, z) => {
-      const body = new CANNON.Body({ mass: 0, material: groundMaterial });
-      body.addShape(new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, depth / 2)));
-      body.position.set(x, y, z);
-      world.addBody(body);
-    };
-    const deckFront = GAME.pusherOriginZ - GAME.pusherAmplitude
-      + GAME.pusherDepth / 2 + GAME.pusherRearExtension - 0.15;
-    const deckBack = GAME.playfieldBackZ - 0.05;
-    addStatic(
-      BED_WIDTH - 0.2,
-      GAME.upperTrayHeight,
-      deckBack - deckFront,
-      0,
-      GAME.upperTrayY - GAME.deckClearance,
-      (deckFront + deckBack) / 2,
-    );
-    addStatic(BED_WIDTH - 0.2, 1.2, 0.16, 0, 1.31, GAME.scraperZ);
-    addStatic(0.25, 2.4, 8, -GLASS_X, 0.95, 0);
-    addStatic(0.25, 2.4, 8, GLASS_X, 0.95, 0);
-
-    const bladeHeight = 0.64;
-    const pusher = new CANNON.Body({ mass: 0, material: pusherMaterial, type: CANNON.Body.KINEMATIC });
-    const pusherDeckDepth = GAME.pusherDepth + GAME.pusherRearExtension;
-    pusher.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, GAME.upperTrayHeight / 2, pusherDeckDepth / 2)),
-      new CANNON.Vec3(0, GAME.upperTrayY, GAME.pusherRearExtension / 2),
-    );
-    pusher.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, bladeHeight / 2, 0.07)),
-      new CANNON.Vec3(0, bladeHeight / 2, -GAME.pusherDepth / 2),
-    );
-    pusher.position.set(0, 0, GAME.pusherOriginZ);
-    world.addBody(pusher);
-
-    const coins = [];
+    const { world, drivePusher } = testMachine();
+    world.beforeStep.length = 0;
+    const seeded = [];
     for (let index = LOWER_SEED_COUNT; index < SEED_COUNT; index += 1) {
-      const seed = seedPosition(index, 777);
-      const body = createCoinBody(coinMaterial);
-      body.position.set(seed.x, seed.y, seed.z);
-      body.previousPosition.copy(body.position);
-      world.addBody(body);
-      coins.push(body);
+      seeded.push(spawnCoin(world, seedPosition(index, 777)));
     }
-
-    // Use the same fixed step frictionGravity was calibrated for. Mixing a 60 Hz settle with a
-    // 120 Hz friction budget halves the hold force and creates a test-only tray drain.
-    const settle = () => { for (let i = 0; i < 240; i += 1) world.step(1 / 120); };
-    settle();
+    advance(world, 2);
+    const motionStartStep = world.stepNumber;
+    world.beforeStep.push((stepNumber) => drivePusher(stepNumber - motionStartStep));
+    const cycle = Math.PI * 2 / GAME.pusherSpeed;
+    // The first strokes are the seed settling: the two-layer seed finds its places on the tray and
+    // a few of its top coins topple off the front, which the game does off-screen before frame one.
+    // What must not happen is the pile then marching on, stroke after stroke.
+    // 3 -> 12 strokes with the 0.05 coin: a thin seed takes longer to find its places (0.19 of
+    // creep over the first 6 strokes, 0.04 over the next 18, then none).
+    advance(world, 12 * cycle);
+    const coins = seeded.filter((body) => body.position.y > 0.4);
     const meanZ = () => coins.reduce((sum, body) => sum + body.position.z, 0) / coins.length;
     const startZ = meanZ();
+    advance(world, 12 * cycle);
 
-    const fixedStep = 1 / 120;
-    const motionStartStep = world.stepnumber;
-    const updatePusherMotion = () => {
-      const motion = pusherMotionAt(world.stepnumber - motionStartStep, fixedStep);
-      pusher.position.z = motion.positionZ;
-      pusher.velocity.set(0, 0, motion.velocityZ);
-      pusher.aabbNeedsUpdate = true;
-    };
-    updatePusherMotion();
-    world.addEventListener('postStep', updatePusherMotion);
-    const fullCycles = 12;
-    const frames = Math.round((fullCycles * Math.PI * 2 / GAME.pusherSpeed) / fixedStep);
-    for (let i = 0; i < frames; i += 1) world.step(fixedStep);
-
-    // A coplanar deck marches the pile off the front; a separated one may settle by a small
-    // fraction of a coin but must not migrate through the machine over repeated cycles.
-    expect(meanZ() - startZ).toBeGreaterThan(-0.1);
-    expect(coins.every((body) => body.position.y > 0.4)).toBe(true);
+    console.info('REAR_DECK', JSON.stringify({ onTray: coins.length, meanDisplacementZ: meanZ() - startZ,
+      minY: Math.min(...coins.map((body) => body.position.y)) }));
+    expect.soft(coins.length).toBeGreaterThan(seeded.length / 2);
+    expect.soft(meanZ() - startZ).toBeGreaterThan(-0.1);
+    expect.soft(coins.every((body) => body.position.y > 0.4)).toBe(true);
   }, 60_000);
 });
 
@@ -730,121 +572,56 @@ describe('fixed rear deck', () => {
 // payouts. A first player coin begins filling the receiving row; repeated drops eventually close
 // the force chain and must still drain the tray and pay out normally.
 describe('tray drainage', () => {
-  it('stays idle through the first drop, then pays out under sustained play', () => {
-    const world = new CANNON.World({
-      gravity: new CANNON.Vec3(0, -24, -GAME.payoutTilt),
-      allowSleep: true,
-    });
-    syncFrictionGravity(world, 1 / 120);
-    world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = 32;
-
-    const groundMaterial = new CANNON.Material('ground');
-    const pusherMaterial = new CANNON.Material('pusher');
-    const coinMaterial = new CANNON.Material('coin');
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, groundMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_GROUND_FRICTION,
-    }));
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, coinMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_COIN_FRICTION,
-    }));
-    world.addContactMaterial(new CANNON.ContactMaterial(coinMaterial, pusherMaterial, {
-      ...CONTACT_SOLVER_OPTIONS,
-      friction: COIN_PUSHER_FRICTION,
-    }));
-
-    const addStatic = (width, height, depth, x, y, z) => {
-      const body = new CANNON.Body({ mass: 0, material: groundMaterial });
-      body.addShape(new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, depth / 2)));
-      body.position.set(x, y, z);
-      world.addBody(body);
-    };
-    const playfieldDepth = GAME.playfieldBackZ - GAME.playfieldFrontZ;
-    const playfieldCenter = (GAME.playfieldBackZ + GAME.playfieldFrontZ) / 2;
-    addStatic(BED_WIDTH, 0.5, playfieldDepth, 0, -0.25, playfieldCenter);
-    addStatic(BED_WIDTH, 2.6, 0.25, 0, 1.05, GAME.playfieldBackZ + 0.05);
-    addStatic(0.25, 2.4, playfieldDepth + 0.2, -GLASS_X, 0.95, playfieldCenter);
-    addStatic(0.25, 2.4, playfieldDepth + 0.2, GLASS_X, 0.95, playfieldCenter);
-    const deckFront = GAME.pusherOriginZ - GAME.pusherAmplitude
-      + GAME.pusherDepth / 2 + GAME.pusherRearExtension - 0.15;
-    const deckBack = GAME.playfieldBackZ - 0.05;
-    addStatic(
-      BED_WIDTH - 0.2,
-      GAME.upperTrayHeight,
-      deckBack - deckFront,
-      0,
-      GAME.upperTrayY - GAME.deckClearance,
-      (deckFront + deckBack) / 2,
-    );
-    addStatic(BED_WIDTH - 0.2, 1.2, 0.16, 0, 1.31, GAME.scraperZ);
-
-    const bladeHeight = 0.64;
-    const pusher = new CANNON.Body({ mass: 0, material: pusherMaterial, type: CANNON.Body.KINEMATIC });
-    const pusherDeckDepth = GAME.pusherDepth + GAME.pusherRearExtension;
-    pusher.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, GAME.upperTrayHeight / 2, pusherDeckDepth / 2)),
-      new CANNON.Vec3(0, GAME.upperTrayY, GAME.pusherRearExtension / 2),
-    );
-    pusher.addShape(
-      new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, bladeHeight / 2, 0.07)),
-      new CANNON.Vec3(0, bladeHeight / 2, -GAME.pusherDepth / 2),
-    );
-    pusher.position.set(0, 0, GAME.pusherOriginZ);
-    pusher.previousPosition.copy(pusher.position);
-    world.addBody(pusher);
-
-    const fixedStep = 1 / 120;
-    world.addEventListener('postStep', () => {
-      const motion = pusherMotionAt(world.stepnumber, fixedStep);
-      pusher.position.z = motion.positionZ;
-      pusher.velocity.set(0, 0, motion.velocityZ);
-      pusher.aabbNeedsUpdate = true;
-    });
-
+  it.each([777, 31, 4242, 99, 2024])('stays idle through the first drop, then pays out under sustained play (seed %i)', (pileSeed) => {
+    const { world } = testMachine();
+    const fixedStep = FIXED_STEP;
     const coins = [];
     const spawn = (x, y, z) => {
-      const body = createCoinBody(coinMaterial);
-      body.position.set(x, y, z);
-      body.previousPosition.copy(body.position);
-      world.addBody(body);
+      const body = spawnCoin(world, { x, y, z });
       coins.push(body);
       return body;
     };
     for (let index = 0; index < SEED_COUNT; index += 1) {
-      const seed = seedPosition(index, 777);
+      const seed = seedPosition(index, pileSeed);
       spawn(seed.x, seed.y, seed.z).seedIndex = index;
     }
     const markPaidOut = () => {
       for (const body of coins) {
-        if (!body.paidOut && body.position.z < GAME.edgeZ) {
+        // The game's own rules: lower-bed grip (CoinPusher.gripOnLowerBed) and coinFallPhase - a
+        // coin teetering on the lip is still in play.
+        if (body.material === 'coin' && onLowerBed(body.position)) world.setMaterial(body, 'lowerCoin');
+        // Same lifecycle as CoinPusher: latch the fall, pay only once it reaches the tray line.
+        const phase = coinFallPhase(body, body.position);
+        if (phase === 'fall') body.falling = true;
+        if (phase === 'score') {
+          body.counted = true;
           body.paidOut = true;
-          world.removeBody(body);
+          body.setEnabled(false);
         }
+        if (phase === 'lost') body.setEnabled(false);
       }
     };
     const advance = (seconds) => {
       for (let i = 0; i < Math.round(seconds / fixedStep); i += 1) {
-        world.step(fixedStep);
+        world.stepOnce();
         markPaidOut();
       }
     };
 
-    // CoinPusher settles off-screen, then discards anything that crossed during that synthetic
-    // setup stroke. Only crossings after that boundary are player-visible payouts.
-    advance(3);
+    // CoinPusher settles off-screen for PILE_SETTLE_SECONDS, then discards anything that crossed
+    // during it - a deep seed sheds a coin or two there, unseen. Only crossings after that
+    // boundary are player-visible payouts.
+    advance(6);
     const discardedAtLoad = coins.filter((body) => body.paidOut).length;
-    expect(discardedAtLoad).toBe(0);
     advance(10);
-    expect(coins.filter((body) => body.paidOut)).toHaveLength(discardedAtLoad);
+    const idlePaidOut = coins.filter((body) => body.paidOut).length - discardedAtLoad;
 
     // One paid player coin starts feeding the machine, but is not enough to complete the lower
     // force chain and cash out the stock that was already sitting at the front.
-    spawn(0, 4, GAME.dropZoneZ).velocity.set(0, -1, 0);
+    spawn(0, 4, GAME.dropZoneZ).setVelocity({ x: 0, y: -1, z: 0 });
     let dropCount = 1;
     advance(8);
-    expect(coins.filter((body) => body.paidOut)).toHaveLength(discardedAtLoad);
+    const firstDropPaidOut = coins.filter((body) => body.paidOut).length - discardedAtLoad;
 
     // Deterministic stand-in for the player: one coin per autoInterval across the aim range.
     const aimAt = (i) => {
@@ -852,12 +629,14 @@ describe('tray drainage', () => {
       return ((noise - Math.floor(noise)) - 0.5) * GAME.playfieldHalfWidth * 1.6;
     };
     const dropEvery = Math.round(GAME.autoInterval / fixedStep);
-    for (let i = 0; i < Math.round(30 / fixedStep); i += 1) {
-      if (i % dropEvery === 0 && coins.filter((body) => !body.paidOut).length < SEED_COUNT + 32) {
-        spawn(aimAt(i), 4, GAME.dropZoneZ).velocity.set(0, -1, 0);
+    // 60 -> 180 s with the lower blade's shorter stroke: the bed stores 100-250 more coins before it
+    // levels off, so the first minute is mostly the fill phase.
+    for (let i = 0; i < Math.round(180 / fixedStep); i += 1) {
+      if (i % dropEvery === 0 && coins.filter((body) => !body.paidOut).length < SEED_COUNT + 300) {
+        spawn(aimAt(i), 4, GAME.dropZoneZ).setVelocity({ x: 0, y: -1, z: 0 });
         dropCount += 1;
       }
-      world.step(fixedStep);
+      world.stepOnce();
       markPaidOut();
     }
 
@@ -867,59 +646,49 @@ describe('tray drainage', () => {
     const stranded = coins.filter((body) => !body.paidOut && body.position.y > trayTop - 0.15);
     const paidOut = coins.filter((body) => body.paidOut).length - discardedAtLoad;
 
-    expect(dropCount).toBeGreaterThan(25);
-    // This is the player-visible regression guard: the old over-constrained contacts advanced
-    // only a few centimetres per stroke and could finish the run without reaching the lip.
-    // The floor was 10 while the sweep span was one coin diameter. Taking the span to 1.5 for
-    // a visibly deeper tray costs payout - that is the whole trade, and this run returns 9 -
-    // so the floor moved with it. 6 is still far above what the failure it guards looks like:
-    // a machine that cannot complete the force chain pays out low single digits or nothing.
-    // Raise the span again and this has to be re-measured, not nudged.
-    expect(paidOut).toBeGreaterThan(6);
-    // The tray is a transit buffer, not a queue that should empty: a coin needs a few strokes
-    // to be scraped to the lip, so at one drop per 0.9 s about 24 are legitimately riding it
-    // (19 before the deeper strip gave them more room to sit in).
-    // A jammed tray holds 46. The threshold sits between the two, nearer the working figure.
-    expect(stranded.length).toBeLessThan(30);
-    // ~28 s of narrowphase on an idle machine, but 120 convex hulls at 120 Hz is the whole
-    // suite's cost centre and it stretches several-fold when anything else wants the CPU.
-    // The budget is for a busy machine, not for the sim getting slower.
+    console.info('PAYOUT', JSON.stringify({ seed: pileSeed, discardedAtLoad, idlePaidOut,
+      firstDropPaidOut, dropCount, paidOut, stranded: stranded.length }));
+    // Keep every calibration bound visible even when an earlier stage fails.
+    expect.soft(discardedAtLoad).toBeLessThanOrEqual(3);
+    expect.soft(idlePaidOut).toBe(0);
+    // The seed is three layers deep with its front row hanging at the lip on purpose, so the first
+    // coin may tip a couple of those off. What must not happen is it cashing out the pile.
+    expect.soft(firstDropPaidOut).toBeLessThanOrEqual(3);
+    expect.soft(dropCount).toBeGreaterThan(25);
+    // Measured over these five seeds with Rapier, the 0.27 coin and the deep pile: 22-38 paid from
+    // 68 drops, a fill phase included, while the lip still threw coins off; 17-31 now that a
+    // coin is only paid once it really falls and may teeter at the lip; 12-20 with payoutTilt
+    // 1.9 -> 0.9; 19-29 with the 0.05 coin, the 110-coin seed and the lower bed's own grip, the
+    // pile now hanging in a clump at the lip and coming down in falls. 83-108 paid from 201 drops
+    // over 180 s with the lower blade on its own 0.65 stroke. The floor is half the worst of them -
+    // a machine that cannot complete the force chain pays one or two at most.
+    expect.soft(paidOut).toBeGreaterThan(41);
+    // The tray strip in front of the scraper holds about one layer of coins; a working tray carries
+    // a layer and a bit (53-59 measured; 64-69 with the 0.05 coin, which packs thinner layers), a
+    // jammed one keeps stacking. Jammed was past 1.75 layers; 2 with the 0.05 coin, whose working
+    // tray settles at 67-79 over 180 s and never climbs past 83 in six-minute runs, while a jam
+    // (a shared 0.6 stroke) runs past 150.
+    const strip = GAME.scraperZ - 0.08 - (GAME.pusherOriginZ + GAME.pusherAmplitude - GAME.pusherDepth / 2);
+    const stripLayer = Math.floor((BED_WIDTH - 0.3) / (2 * COIN_RADIUS)) * Math.floor(strip / (2 * COIN_RADIUS));
+    expect.soft(stranded.length).toBeLessThan(stripLayer * 2);
   }, 420_000);
 });
 
 describe('pusher stroke smoothness', () => {
-  // Reproduces the runtime postStep driver and interpolated rendering at several display
-  // rates. Each physics step is re-anchored to the analytical stroke, preventing drift.
-  const createDrivenPusher = (fixedStep = 1 / 120) => {
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -24, -GAME.payoutTilt) });
-    const pusher = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-    pusher.addShape(new CANNON.Box(new CANNON.Vec3((BED_WIDTH - 0.3) / 2, GAME.upperTrayHeight / 2, GAME.pusherDepth / 2)));
-    pusher.position.set(0, 0, GAME.pusherOriginZ);
-    pusher.previousPosition.copy(pusher.position);
-    pusher.interpolatedPosition.copy(pusher.position);
-    world.addBody(pusher);
-
-    const updateMotion = () => {
-      const motion = pusherMotionAt(world.stepnumber, fixedStep);
-      pusher.position.z = motion.positionZ;
-      pusher.velocity.set(0, 0, motion.velocityZ);
-      pusher.aabbNeedsUpdate = true;
-    };
-    updateMotion();
-    world.addEventListener('postStep', updateMotion);
-    return { fixedStep, pusher, world };
-  };
+  const createDrivenPusher = () => ({ ...testMachine(), fixedStep: FIXED_STEP });
 
   const measure = (hz, seconds = 8) => {
-    const { fixedStep, pusher, world } = createDrivenPusher();
+    const { pusher, world } = createDrivenPusher();
 
     const frameDt = 1 / hz;
-    let previous = pusher.interpolatedPosition.z;
+    const renderedPosition = new Vector3();
+    let previous = pusher.position.z;
     const travel = [];
     const positions = [];
     for (let frame = 0; frame < seconds * hz; frame += 1) {
-      world.step(fixedStep, frameDt, 8);
-      const rendered = pusher.interpolatedPosition.z;
+      const alpha = world.step(frameDt);
+      pusher.lerpPose(alpha, renderedPosition);
+      const rendered = renderedPosition.z;
       if (frame > hz) travel.push(Math.abs(rendered - previous));
       positions.push(rendered);
       previous = rendered;
@@ -943,10 +712,10 @@ describe('pusher stroke smoothness', () => {
 
   it('remains centred after ten minutes of physics steps', () => {
     const { fixedStep, pusher, world } = createDrivenPusher();
-    for (let frame = 0; frame < 10 * 60 * 120; frame += 1) world.step(fixedStep);
+    for (let frame = 0; frame < 10 * 60 / fixedStep; frame += 1) world.stepOnce();
 
-    const expected = pusherMotionAt(world.stepnumber, fixedStep);
-    expect(pusher.position.z).toBeCloseTo(expected.positionZ, 12);
+    const expected = pusherMotionAt(world.stepNumber, fixedStep);
+    expect(pusher.position.z).toBeCloseTo(expected.positionZ, 6);
     expect(Math.abs(pusher.position.z - GAME.pusherOriginZ)).toBeLessThanOrEqual(GAME.pusherAmplitude);
   });
 });
@@ -986,23 +755,63 @@ describe('launch rails', () => {
     expect(launchSpeedFor(1)).toBeCloseTo(GAME.railSpeedMax, 8);
   });
 
-  it('absorbs a rail coin at the side wall without redirecting it towards the payout edge', () => {
-    for (const wallSide of [-1, 1]) {
-      const body = createCoinBody(new CANNON.Material('coin'));
-      body.position.set(wallSide * (GAME.playfieldHalfWidth - COIN_RADIUS), 1.07, GAME.dropZoneZ);
-      body.velocity.set(wallSide * 4.2, -0.3, -0.8);
-      body.angularVelocity.set(0.4, -0.2, wallSide * 12);
-      body.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), Math.PI / 2);
+});
 
-      stopRailCoinAtWall(body);
-      const axis = body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
+describe('buriedCoinIndex', () => {
+  const back = () => GAME.playfieldFrontZ + 2;
+  const bottom = COIN_HEIGHT / 2;
 
-      expect(body.velocity.x).toBe(0);
-      expect(body.velocity.y).toBe(-0.3);
-      expect(body.velocity.z).toBe(0);
-      expect(body.angularVelocity.isZero()).toBe(true);
-      expect(Math.abs(axis.y)).toBeGreaterThan(0.05);
-      expect(Math.sign(axis.y)).toBe(-wallSide);
-    }
+  it('picks a bottom-layer coin with two coins stacked over it', () => {
+    const z = back();
+    const positions = [
+      { x: 1, y: bottom, z },
+      { x: 0, y: bottom, z },
+      { x: 0.05, y: bottom + COIN_HEIGHT, z },
+      { x: -0.05, y: bottom + 2 * COIN_HEIGHT, z: z + 0.05 },
+    ];
+    expect(buriedCoinIndex(positions)).toBe(1);
+  });
+
+  it('prefers the most buried coin, and falls back to the lowest when nothing is buried', () => {
+    const z = back();
+    expect(buriedCoinIndex([
+      { x: 1, y: bottom, z },
+      { x: 0, y: bottom, z },
+      { x: 0, y: bottom + COIN_HEIGHT, z },
+    ])).toBe(1);
+    expect(buriedCoinIndex([
+      { x: 1, y: bottom + 0.1, z },
+      { x: -1, y: bottom, z },
+    ])).toBe(1);
+  });
+
+  it('never touches anything near the lip', () => {
+    const lip = GAME.playfieldFrontZ + 0.3;
+    expect(buriedCoinIndex([
+      { x: 0, y: bottom, z: lip },
+      { x: 0, y: bottom + COIN_HEIGHT, z: lip },
+      { x: 0, y: bottom + 2 * COIN_HEIGHT, z: lip },
+    ])).toBe(-1);
+  });
+
+  it('ignores coins on the tray above and in the chute below', () => {
+    expect(buriedCoinIndex([
+      { x: 0, y: -1.5, z: back() },
+      { x: 0, y: 0.75, z: back() },
+      { x: 0, y: 0.8, z: back() },
+    ])).toBe(-1);
+  });
+});
+
+describe('nextCoinCeiling', () => {
+  it('backs off on a slow step and recovers on a fast one, within its bounds', () => {
+    expect(nextCoinCeiling(300, 14, 300)).toBe(290);
+    expect(nextCoinCeiling(290, 3, 300)).toBe(295);
+    expect(nextCoinCeiling(300, 3, 300)).toBe(300);
+    expect(nextCoinCeiling(MIN_COIN_CEILING, 40, 300)).toBe(MIN_COIN_CEILING);
+  });
+
+  it('holds between the thresholds so it does not hunt', () => {
+    expect(nextCoinCeiling(250, 8, 300)).toBe(250);
   });
 });

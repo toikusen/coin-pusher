@@ -18,7 +18,7 @@ import bpy
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# ellipse_ring path segments and bevel sides. The cabinet's six marquee rings are most of that
+# ellipse_ring path segments and bevel sides. The slot's crown rings are a large share of that
 # model's triangle budget; this is the first dial to turn if a file needs to be smaller.
 RING_SPANS = 8           # per Bezier span, x4 spans = 32 path segments
 RING_BEVEL_RES = 1       # 6 sides, flats facing z
@@ -75,7 +75,11 @@ def standard_materials():
         # A lighter body tone for props that stand against nothing. shell_dark works on the
         # cabinet because the lit hall sits behind it and the silhouette is cut by contrast; the
         # launcher hangs in an empty foreground, where near-black has no edge to be read by.
-        "shell_raised": make_material("shell_raised", linear_rgb(hexes["shellRaised"]), 0.30, 0.70),
+        # Matte, the tray inlays' finish: at 0.70 metal / 0.30 rough it was mostly a mirror, and
+        # since the environment became the neon hall, whose brightest thing is a white panel
+        # overhead, what it mirrored was flat grey - a grey block in a navy and gold machine.
+        "shell_raised": make_material("shell_raised", linear_rgb(hexes["shellRaised"]), 0.55, 0.25),
+        "rail_brass": make_material("rail_brass", linear_rgb(hexes["gold"]), 0.34, 0.80),
         "trim_gold": make_material(
             "trim_gold", linear_rgb(hexes["gold"]), 0.26, 0.92,
             emission=linear_rgb(hexes["gold"]), strength=0.35,

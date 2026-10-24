@@ -1,4 +1,5 @@
 import './styles.css';
+import { Capacitor } from '@capacitor/core';
 import { CoinPusher } from './game/CoinPusher.js';
 import {
   GAME,
@@ -10,12 +11,17 @@ import { TUNING_DEFAULTS } from './game/physics.js';
 import { CHEATS } from './game/cheats.js';
 import { calculateReward, chestsDue } from './game/rules.js';
 import { GameAudio } from './audio.js';
+import { watchHinge } from './hinge.js';
 import { loadProgress, saveProgress } from './storage.js';
 import { collectUI, GameUI, GEOMETRY_CONTROLS, TUNING_CONTROLS } from './ui.js';
 
 const elements = collectUI();
 const ui = new GameUI(elements);
 const quality = getQualityProfile();
+// The app shell reports the hinge (src/hinge.js). In a browser there is none to read, so
+// ?hinge=<degrees> stands in for it: 180 lies the machine flat, 90 stands it up.
+const hingeParam = new URLSearchParams(location.search).get('hinge');
+if (hingeParam !== null || Capacitor.isNativePlatform()) document.documentElement.dataset.fold = '';
 const progress = loadProgress();
 progress.hdriHorizontal = Number.isFinite(progress.hdriHorizontal)
   ? Math.min(180, Math.max(-180, progress.hdriHorizontal))
@@ -44,11 +50,15 @@ progress.tuning = sanitiseTuning(progress.tuning);
 // Before anything reads GAME's Z layout: machineGeometryFor() rejects and clamps on its own, so a
 // hand-edited entry can only produce a machine that still holds together, and CoinPusher builds
 // itself from whatever this leaves behind.
-progress.geometry = pickGeometry(applyMachineGeometry(progress.geometry));
-// Store only the five knobs, never the derived edges: saving the derivations would let a stale
-// entry disagree with what machineGeometryFor produces today.
+applyMachineGeometry(progress.geometry);
+progress.geometry = pickGeometry(progress.geometry);
+// Store only the knobs the player actually moved, never the derived edges or the defaults: saving
+// the resolved defaults on every boot froze them, so a change to MACHINE_GEOMETRY_DEFAULTS never
+// reached anyone who had played before.
 function pickGeometry(geometry) {
-  return Object.fromEntries(GEOMETRY_CONTROLS.map(({ key }) => [key, geometry[key]]));
+  return Object.fromEntries(GEOMETRY_CONTROLS
+    .map(({ key }) => [key, geometry[key]])
+    .filter(([, value]) => Number.isFinite(value)));
 }
 
 const audio = new GameAudio(progress.soundEnabled);
@@ -66,8 +76,6 @@ const state = {
 
 let game = null;
 let autoTimer = 0;
-let aimTimer = 0;
-let aim = 0;
 
 function persist() {
   saveProgress({
@@ -96,6 +104,9 @@ function stopAuto() {
 
 function attemptDrop() {
   if (!state.ready || !game) return;
+  // Phone nearly shut: the machine is paused, so a press (or the auto timer) quietly does nothing
+  // rather than charging a coin or sounding the jammed-slot error.
+  if (game.closed) return;
   audio.ensureContext();
   if (state.credits <= 0) {
     stopAuto();
@@ -114,28 +125,6 @@ function attemptDrop() {
   renderState();
 }
 
-function setAim(nextAim) {
-  aim = Math.min(1, Math.max(-1, Number.isFinite(nextAim) ? nextAim : 0));
-  game?.setLauncherAim(aim);
-  ui.setAim(aim);
-}
-
-function nudgeAim(direction, amount = 0.055) {
-  if (!state.ready) return;
-  setAim(aim + Math.sign(direction) * amount);
-}
-
-function stopAimMove() {
-  window.clearInterval(aimTimer);
-  aimTimer = 0;
-}
-
-function beginAimMove(direction) {
-  stopAimMove();
-  nudgeAim(direction, 0.09);
-  aimTimer = window.setInterval(() => nudgeAim(direction), 45);
-}
-
 function toggleAuto() {
   if (!state.ready) return;
   if (state.auto) {
@@ -150,17 +139,11 @@ function toggleAuto() {
   state.auto = true;
   ui.setAuto(true);
   ui.announce('已開啟自動投幣');
-  // Sweep a predictable pattern across the tray so auto-play visibly uses the same launcher.
-  const autoAims = [-0.72, -0.24, 0.24, 0.72, 0.24, -0.24];
-  let autoAim = 0;
-  const autoDrop = () => {
-    setAim(autoAims[autoAim % autoAims.length]);
-    autoAim += 1;
-    attemptDrop();
-  };
-  autoDrop();
+  attemptDrop();
   autoTimer = window.setInterval(() => {
-    if (!document.hidden && !elements.onboarding.open) autoDrop();
+    // Held while the game is settling a new pile or its physics has fallen behind (CoinPusher
+    // `busy`): dropping at wall-clock rate then would feed the pile faster than it moves.
+    if (!document.hidden && !elements.onboarding.open && !game?.busy) attemptDrop();
   }, GAME.autoInterval * 1000);
 }
 
@@ -281,7 +264,7 @@ function flushPayout() {
   state.bestScore = Math.max(state.bestScore, state.score);
 
   ui.reward({ ...result, premium });
-  ui.announce(`掉落 ${coins.length} 枚，獲得 ${result.total} 分，剩餘 ${state.credits} 枚硬幣`);
+  ui.announce(`掉落 ${coins.length} 枚，獲得 ${result.total} 分`);
   if (result.bonus > 0) audio.jackpot();
   else audio.payout(premium);
   navigator.vibrate?.(result.bonus > 0 ? [25, 35, 45] : 20);
@@ -369,7 +352,7 @@ function bindUI() {
         { [key]: Number(input.value) },
         { reseed: event.type === 'change' },
       );
-      progress.geometry = pickGeometry(geometry);
+      progress.geometry = { ...progress.geometry, [key]: geometry[key] };
       if (event.type !== 'change') {
         elements[`${id}Value`].value = Number(geometry[key]).toFixed(2);
         return;
@@ -398,7 +381,8 @@ function bindUI() {
 
   elements.tuneGeometryReset.addEventListener('click', () => {
     if (!game) return;
-    progress.geometry = pickGeometry(game.setMachineGeometry(MACHINE_GEOMETRY_DEFAULTS, { reseed: true }));
+    game.setMachineGeometry(MACHINE_GEOMETRY_DEFAULTS, { reseed: true });
+    progress.geometry = {};
     ui.setGeometry(game.geometry);
     persist();
     ui.announce('機台幾何已回到預設值');
@@ -412,20 +396,6 @@ function bindUI() {
     ui.announce('物理參數已回到預設值');
   });
 
-  for (const [direction, button] of [[-1, elements.aimLeft], [1, elements.aimRight]]) {
-    button.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      beginAimMove(direction);
-    });
-    button.addEventListener('pointerup', stopAimMove);
-    button.addEventListener('pointerleave', stopAimMove);
-    button.addEventListener('pointercancel', stopAimMove);
-    // Keyboard activation dispatches click without a pointerdown.
-    button.addEventListener('click', (event) => {
-      if (event.detail === 0) nudgeAim(direction, 0.09);
-    });
-  }
-  elements.aimSlider.addEventListener('input', () => setAim(Number(elements.aimSlider.value) / 100));
   elements.dropButton.addEventListener('click', attemptDrop);
   elements.autoButton.addEventListener('click', toggleAuto);
   elements.soundButton.addEventListener('click', () => {
@@ -458,13 +428,8 @@ function bindUI() {
     event.preventDefault();
     closeOnboarding();
   });
-  // Arrow/A-D repeats provide continuous travel. F/Space fires from the current reticle.
   elements.gameCanvas.addEventListener('keydown', (event) => {
-    const direction = { ArrowLeft: -1, a: -1, A: -1, ArrowRight: 1, d: 1, D: 1 }[event.key];
-    if (direction) {
-      event.preventDefault();
-      nudgeAim(direction, event.repeat ? 0.055 : 0.09);
-    } else if (event.key === ' ' || event.key.toLowerCase() === 'f') {
+    if (event.key === ' ' || event.key.toLowerCase() === 'f') {
       event.preventDefault();
       if (!event.repeat) attemptDrop();
     } else if (event.key.toLowerCase() === 'r') {
@@ -472,9 +437,7 @@ function bindUI() {
       if (!event.repeat) toggleAuto();
     }
   });
-  window.addEventListener('blur', stopAimMove);
   document.addEventListener('visibilitychange', () => {
-    stopAimMove();
     if (!game || elements.onboarding.open) return;
     if (document.hidden) game.stop();
     else game.start();
@@ -484,17 +447,34 @@ function bindUI() {
 
 async function boot() {
   bindUI();
-  setAim(0);
   renderState();
   try {
     game = await new CoinPusher(elements.gameCanvas, quality, {
-      onAimChange: setAim,
       onScore: handleScore,
+      onBoardHit: (kind, strength) => audio.boardHit(kind, strength),
       onError: (message) => ui.error(message),
     }).init();
-    game.setLauncherAim(aim);
+    if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));
+    // A null angle (no hinge, or status unknown) reads as flat.
+    watchHinge(({ angle }) => game?.setHingeAngle(angle ?? 180));
     // Dev-only handle so motion can be measured from the console. Stripped from the build.
     if (import.meta.env.DEV) window.__game = game;
+    // Dev builds only: frame rate, physics time (mean / worst over half a second) and coins in play,
+    // for checking the bed's coin count against a real phone.
+    if (import.meta.env.DEV) {
+      // A tight loop that a JIT finishes in a few ms and an interpreter (Lockdown Mode) in hundreds.
+      const loopStart = performance.now();
+      let sink = 0;
+      for (let i = 0; i < 5e6; i += 1) sink = (sink + i * 7) % 1000003;
+      const loopMs = performance.now() - loopStart;
+      const perfLabel = document.createElement('output');
+      perfLabel.className = 'perf-overlay';
+      document.body.append(perfLabel);
+      setInterval(() => {
+        const perf = game.perf;
+        if (perf) perfLabel.textContent = `${perf.fps.toFixed(0)} fps · physics ${perf.physicsMs.toFixed(1)} / ${perf.physicsMaxMs.toFixed(1)} ms · render ${perf.renderMs.toFixed(1)} ms · ${perf.coins}/${perf.ceiling} coins · dpr ${perf.pixelRatio} · ${perf.build} · js ${loopMs.toFixed(0)} ms${sink < 0 ? '' : ''}`;
+      }, 500);
+    }
     game.setEnvironmentRotation(progress.hdriHorizontal, progress.hdriVertical);
     ui.setHdriRotation(progress.hdriHorizontal, progress.hdriVertical);
     if (Object.keys(progress.tuning).length > 0) game.setPhysics(progress.tuning);

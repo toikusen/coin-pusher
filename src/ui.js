@@ -1,4 +1,4 @@
-import { GAME } from './game/config.js';
+import { GAME, MACHINE_GEOMETRY_LIMITS } from './game/config.js';
 
 
 // Slider id -> the setPhysics key it drives, and how many decimals its readout shows.
@@ -28,8 +28,7 @@ export function collectUI() {
   const ids = [
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
     'gameCanvas', 'field', 'loading', 'loadError', 'errorMessage', 'retryButton',
-    'reward', 'rewardAmount', 'rewardCombo', 'dropButton', 'aimLeft', 'aimRight',
-    'aimSlider', 'autoButton',
+    'reward', 'rewardAmount', 'rewardCombo', 'dropButton', 'autoButton',
     'soundButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
     'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset', 'tuneGeometryReset',
     'hdriHorizontal', 'hdriHorizontalValue', 'hdriVertical', 'hdriVerticalValue', 'hdriReset',
@@ -48,23 +47,13 @@ export class GameUI {
 
   update(state) {
     this.el.score.textContent = state.score;
-    this.el.credits.textContent = state.credits;
+    this.el.credits.textContent = Number.isFinite(state.credits) ? state.credits : '∞';
     this.el.bestScore.textContent = state.bestScore;
     this.el.missionValue.textContent = `推落 ${Math.min(state.score, GAME.missionTarget)} / ${GAME.missionTarget}`;
     this.el.missionBar.style.width = `${Math.min(100, (state.score / GAME.missionTarget) * 100)}%`;
     const idle = state.credits <= 0 || !state.ready;
     this.el.dropButton.disabled = idle;
-    this.el.aimLeft.disabled = !state.ready;
-    this.el.aimRight.disabled = !state.ready;
-    this.el.aimSlider.disabled = !state.ready;
     this.el.autoButton.disabled = idle;
-  }
-
-  setAim(aim) {
-    const value = Math.round(Math.min(1, Math.max(-1, aim)) * 100);
-    this.el.aimSlider.value = value;
-    const position = Math.abs(value) < 4 ? '中央' : value < 0 ? `左側 ${Math.abs(value)}%` : `右側 ${value}%`;
-    this.el.aimSlider.setAttribute('aria-valuetext', position);
   }
 
   setTunePanel(open) {
@@ -86,6 +75,10 @@ export class GameUI {
   // always the one the slider was dropped on, and the panel has to show what the machine took.
   setGeometry(geometry) {
     for (const { id, key } of GEOMETRY_CONTROLS) {
+      // Ranges come from the same limits machineGeometryFor clamps to: hard-coded in the markup they
+      // went stale as the machine was retuned, and a slider whose max sat under the default yanked
+      // the pusher back the moment it was touched.
+      [this.el[id].min, this.el[id].max] = MACHINE_GEOMETRY_LIMITS[key];
       this.el[id].value = geometry[key];
       this.el[`${id}Value`].value = Number(geometry[key]).toFixed(2);
     }

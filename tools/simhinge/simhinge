@@ -1,0 +1,13 @@
+#!/bin/sh
+# Set the booted foldable simulator's hinge angle: tools/simhinge/simhinge <degrees> [udid]
+# Builds the in-simulator helper on first use (or when the source changes). See simhinge.m.
+set -e
+DIR=$(cd "$(dirname "$0")" && pwd)
+BIN="${TMPDIR:-/tmp}/simhinge-$(shasum "$DIR/simhinge.m" | cut -c1-12)"
+UDID=${2:-booted}
+if [ ! -x "$BIN" ]; then
+  xcrun -sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=17.0 -O2 -fobjc-arc \
+    "$DIR/simhinge.m" -o "$BIN" -framework IOKit -framework CoreFoundation -framework Foundation
+  codesign -f -s - "$BIN" >/dev/null 2>&1
+fi
+xcrun simctl spawn "$UDID" "$BIN" "$1"

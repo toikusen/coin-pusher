@@ -1,26 +1,93 @@
-import * as CANNON from 'cannon-es';
 import { COIN_RADIUS, GAME } from './config.js';
 
 export { COIN_RADIUS };
-export const COIN_HEIGHT = 0.1;
+// Thin, like a real token (about a tenth of its radius): a thick coin stacks like a draughts piece,
+// a thin one shingles over its neighbours, and that overlap is what lets a clump hang out over the
+// lip held up by the pile behind it.
+export const COIN_HEIGHT = 0.05;
 export const COIN_MASS = 0.05;
-// Fill most of the lower tier's safe slots while preserving a full receiving row in front of the
-// blade. The initial pile deliberately does not complete the blade-to-lip force chain: player
-// drops fill that last link, so an idle machine and the very first drop cannot pay out for free.
-export const LOWER_SEED_COUNT = 14;
-export const COIN_GROUND_FRICTION = 0.14;
+// About what the bed holds in play (95-105 coins, headless): a deeper seed has nowhere to go but
+// over the lip in one avalanche the moment play starts. Laid in brick-bonded, lip-leaning layers
+// (seedPosition) and held by LOWER_COIN_FRICTION - the drainage run pays nothing idle or on the
+// first drop.
+export const LOWER_SEED_COUNT = 110;
+// Coin-on-coin grip once a coin is on the lower bed (CoinPusher switches it to the 'lowerCoin'
+// material). The tray keeps COIN_COIN_FRICTION: at 0.45 there it already jams, while on the bed
+// this much grip is what lets overlapping coins cantilever past the face instead of sliding off.
+export const LOWER_COIN_FRICTION = 2;
+
+/**
+ * Index of a lower-bed coin that can be taken out with the least to see: the one with the most
+ * coins stacked over it (a bottom-layer coin under two or more is invisible), lowest first on a
+ * tie, and only well back from the lip so the clump hanging there is never undermined. With
+ * nothing buried at all it falls back to the lowest coin in that back zone. -1 when the zone is
+ * empty. O(n^2), so only call it when over the coin ceiling (quality.maxLiveCoins).
+ */
+export function buriedCoinIndex(positions, thickness = COIN_HEIGHT) {
+  const reach = COIN_RADIUS * 0.8;
+  let best = -1;
+  let bestAbove = -1;
+  for (let i = 0; i < positions.length; i += 1) {
+    const low = positions[i];
+    if (low.y < 0 || low.y > 0.5 || low.z < GAME.playfieldFrontZ + 1) continue;
+    let above = 0;
+    for (let j = 0; j < positions.length && above < 2; j += 1) {
+      const p = positions[j];
+      if (j === i || p.y <= low.y + thickness * 0.5 || p.y > 0.6) continue;
+      if (Math.hypot(p.x - low.x, p.z - low.z) < reach) above += 1;
+    }
+    if (above > bestAbove || (above === bestAbove && low.y < positions[best].y)) {
+      best = i;
+      bestAbove = above;
+    }
+  }
+  return best;
+}
+
+// Bounds for the live coin ceiling. A hot phone throttles its CPU (measured: an iPhone that held
+// 60 fps at ~300 coins cool dropped to 20 fps at 140 once warm), so the ceiling follows the
+// measured physics step instead of trusting the device's cool-headed best.
+export const MIN_COIN_CEILING = 150;
+const SLOW_STEP_MS = 10;
+const FAST_STEP_MS = 6;
+
+/**
+ * Next live coin ceiling from the mean physics step over the last half second: down 10 when a
+ * step eats most of a frame, back up 5 when there is room again, within MIN_COIN_CEILING..max.
+ * The gap between the two thresholds is the hysteresis that keeps it from hunting.
+ */
+export function nextCoinCeiling(current, stepMs, max) {
+  if (stepMs > SLOW_STEP_MS) return Math.max(MIN_COIN_CEILING, current - 10);
+  if (stepMs < FAST_STEP_MS) return Math.min(max, current + 5);
+  return current;
+}
+
+/** Whether a coin has come down off the tray onto the lower bed, where it takes LOWER_COIN_FRICTION. */
+export function onLowerBed(position) {
+  return position.y < GAME.upperTrayY - 0.12 && position.z < lowerBladeReachZ() + 0.3;
+}
+
+// The tray's front edge at full retreat, which is where the lower blade's stroke starts from too.
+const trayFrontAtRetreat = () => GAME.pusherOriginZ + GAME.pusherAmplitude - GAME.pusherDepth / 2;
+
+/** Centre Z of the lower blade at a step: GAME.lowerBladeAmplitude in phase with the tray. */
+export function lowerBladeZAt(stepNumber, fixedStep) {
+  const amplitude = GAME.lowerBladeAmplitude;
+  return trayFrontAtRetreat() - amplitude + amplitude * Math.sin(stepNumber * fixedStep * GAME.pusherSpeed);
+}
+
+/** Furthest forward the lower blade's centre ever gets. */
+export function lowerBladeReachZ() {
+  return trayFrontAtRetreat() - 2 * GAME.lowerBladeAmplitude;
+}
+// 0.14 -> 0.3 and the pusher's 1 -> 0.8 with the move to Rapier, whose friction is the coefficient
+// as written (cannon-es scaled its own per contact): a deep pile at 0.14 crept off the lip idle,
+// and the tray's pile at 0.6 kept marching forward over 36 idle strokes - at 0.8 it holds still.
+export const COIN_GROUND_FRICTION = 0.3;
 export const COIN_COIN_FRICTION = 0.3;
-export const COIN_PUSHER_FRICTION = 1;
+export const COIN_PUSHER_FRICTION = 0.8;
 export const COIN_LINEAR_DAMPING = 0.12;
 export const COIN_ANGULAR_DAMPING = 0.58;
-// Rim faces trade contact quality for narrowphase cost, and the cost is quadratic: cannon-es
-// clips every face of one convex hull against every face of the other, so a crowded pile at 20
-// segments spends ~16 ms per step against ~8 ms at 12 - past the 60 fps budget on its own once
-// two 120 Hz steps land in one frame. 12 keeps the rim round enough that a rail coin rolls
-// smoothly (3% radius wobble) and coin-to-coin normals stay stable in the pile.
-// ponytail: the real ceiling is convex-convex SAT. If the cap ever goes far past ~150 coins,
-// the upgrade is a cheap custom coin-coin narrowphase, not fewer faces.
-export const COIN_SEGMENTS = 12;
 
 // Where a chest is dropped in: hard against the scraper's front face, the deepest start that still
 // clears it, so the chest rides the full length of the machine before it can pay. 0.08 is the
@@ -45,9 +112,10 @@ export function settleChestOnLowerBed(body, drop, halfHeight, halfDepth) {
   if (drop.lowerBedLanded || body.position.y > halfHeight + 0.12) return false;
   drop.lowerBedLanded = true;
   if (body.position.z < GAME.edgeZ + halfDepth + COIN_RADIUS) return false;
-  body.velocity.z = Math.max(0, body.velocity.z);
-  body.angularVelocity.scale(0.25, body.angularVelocity);
-  body.wakeUp();
+  const { x, y, z } = body.velocity;
+  const spin = body.angularVelocity;
+  body.setVelocity({ x, y, z: Math.max(0, z) });
+  body.setAngularVelocity({ x: spin.x * 0.25, y: spin.y * 0.25, z: spin.z * 0.25 });
   return true;
 }
 
@@ -58,62 +126,24 @@ export function settleChestOnLowerBed(body, drop, halfHeight, halfDepth) {
 // once when it crosses. Clamping, not setting: it only ever adds the motion that is missing, so a
 // body already in free fall keeps its own arc and the repeat costs it nothing.
 export function nudgeOverLip(body) {
-  body.velocity.x = 0;
-  body.velocity.y = Math.min(body.velocity.y, -1.5);
-  body.velocity.z = Math.min(body.velocity.z, -3);
-  body.wakeUp();
+  const { y, z } = body.velocity;
+  body.setVelocity({ x: 0, y: Math.min(y, -1.5), z: Math.min(z, -3) });
 }
 
-// The rail coin is allowed to cross the tray at full speed. Only a hit on the far side wall gets
-// this response: absorb the horizontal motion and take the perfect wheel spin out of it, then add
-// a barely visible lean so gravity can lay it down instead of leaving it balanced on its edge.
-export function stopRailCoinAtWall(body) {
-  body.velocity.x = 0;
-  body.velocity.z = 0;
-  body.angularVelocity.setZero();
-
-  const lean = new CANNON.Quaternion();
-  lean.setFromAxisAngle(
-    new CANNON.Vec3(1, 0, 0),
-    Math.sign(body.position.x || 1) * 0.06,
-  );
-  body.quaternion.copy(lean.mult(body.quaternion));
-  body.aabbNeedsUpdate = true;
-  body.wakeUp();
-}
-
-// cannon-es creates one friction pair for every contact in a convex manifold and gives each pair
-// the full material friction budget. A flat coin therefore receives roughly COIN_SEGMENTS copies
-// of the intended table friction. Its solver also clamps impulses per step, so the same material feels
-// twice as sticky at 120 Hz as at 60 Hz. frictionGravity is the supported force-scale override;
-// calibrating it by both the fixed step and the face contact count makes the public coefficients
-// behave like coefficients again and keeps low/high-power profiles consistent.
-export function syncFrictionGravity(world, fixedStep) {
-  world.frictionGravity ??= new CANNON.Vec3();
-  world.gravity.scale(fixedStep / COIN_SEGMENTS, world.frictionGravity);
-}
-
-// The knobs the tuning panel drives. All of them take effect on a running world: cannon-es
-// reads friction off the ContactMaterial during narrowphase and gravity off the world every
-// step. Only `thickness` is different - it resizes the collision shape, which cannot grow
-// under a settled stack without shoving it apart, so changing it rebuilds the pile.
+// The knobs the tuning panel drives. All of them take effect on a running world - friction is
+// re-derived per collider (world.js frictionFor) and gravity is read every step. Only
+// `thickness` is different - it resizes the collision shape, which cannot grow under a settled
+// stack without shoving it apart, so changing it rebuilds the pile.
 export const TUNING_DEFAULTS = Object.freeze({
   mass: COIN_MASS,
   thickness: COIN_HEIGHT,
   groundFriction: COIN_GROUND_FRICTION,
   coinFriction: COIN_COIN_FRICTION,
   pusherFriction: COIN_PUSHER_FRICTION,
+  lowerCoinFriction: LOWER_COIN_FRICTION,
   linearDamping: COIN_LINEAR_DAMPING,
   angularDamping: COIN_ANGULAR_DAMPING,
   tilt: GAME.payoutTilt,
-});
-
-export const CONTACT_SOLVER_OPTIONS = Object.freeze({
-  restitution: 0,
-  contactEquationStiffness: 1e7,
-  contactEquationRelaxation: 5,
-  frictionEquationStiffness: 1e7,
-  frictionEquationRelaxation: 5,
 });
 
 // Return an exact bounded pose plus the secant velocity for the following physics step.
@@ -144,52 +174,41 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function createCoinBody(material, tuning = TUNING_DEFAULTS) {
-  const body = new CANNON.Body({
+// The collider is this much thicker than the coin drawn: world.js runs soft contacts, and a coin
+// under load sinks about this far into what it rests on. Padding the collider puts the drawn coins
+// back face to face instead of visibly cutting into each other.
+export const COIN_COLLIDER_PAD = 0.015;
+
+/** A pooled coin body in `world` (see world.js), disabled until released. */
+export function createCoinBody(world, tuning = TUNING_DEFAULTS) {
+  return world.addCoin({
+    radius: COIN_RADIUS,
+    thickness: tuning.thickness + COIN_COLLIDER_PAD,
     mass: tuning.mass,
-    material,
-    allowSleep: true,
-    // Treat tiny solver residuals as rest sooner so a settled pile does not shimmer.
-    sleepSpeedLimit: 0.18,
-    sleepTimeLimit: 0.45,
+    linearDamping: tuning.linearDamping,
+    angularDamping: tuning.angularDamping,
   });
-
-  // cannon-es cylinders already use Y as their height axis, matching Three.js.
-  // Shapes cannot be shared: Body.addShape assigns shape.body to its owner.
-  body.addShape(new CANNON.Cylinder(COIN_RADIUS, COIN_RADIUS, tuning.thickness, COIN_SEGMENTS));
-  body.linearDamping = tuning.linearDamping;
-  body.angularDamping = tuning.angularDamping;
-  return body;
 }
 
-// cannon-es approximates a body's inertia from its AABB (Body.updateMassProperties), so
-// thickness is the knob that actually decides whether a coin tips or slides: it is the only one
-// that changes the ratio between the tipping arm and the resisting arm. Mass on its own is
-// close to neutral - weight and inertia scale together, and the friction ceiling is derived
-// from mass too, so a heavier coin is pushed by a proportionally larger force.
+// Thickness decides whether a coin tips or slides - it is the ratio between the tipping arm and
+// the resisting arm - so it is the one knob that reshapes the collider.
 export function applyCoinTuning(body, tuning, resizeShape = false) {
-  if (resizeShape) {
-    body.shapes.length = 0;
-    body.shapeOffsets.length = 0;
-    body.shapeOrientations.length = 0;
-    body.addShape(new CANNON.Cylinder(COIN_RADIUS, COIN_RADIUS, tuning.thickness, COIN_SEGMENTS));
-  }
-  body.mass = tuning.mass;
-  body.linearDamping = tuning.linearDamping;
-  body.angularDamping = tuning.angularDamping;
-  body.updateMassProperties();
-  body.aabbNeedsUpdate = true;
-  body.wakeUp();
+  if (resizeShape) body.world.resizeCoin(body, COIN_RADIUS, tuning.thickness + COIN_COLLIDER_PAD);
+  body.setMass(tuning.mass);
+  body.setDamping(tuning.linearDamping, tuning.angularDamping);
+  if (body.enabled) body.wakeUp();
 }
 
-// A seeded pile must never spawn coins interpenetrating. cannon-es resolves deep
+// A seeded pile must never spawn coins interpenetrating. the solver resolves deep
 // penetration with push-apart impulses, and in a jammed multi-layer pile it never fully
 // resolves: the push-apart reaches equilibrium with the damping instead of stopping, so
 // the coins never drop below their sleep threshold and shimmer forever. Both pitches
 // therefore exceed the coin diameter by more than the jitter below can close.
-const COLUMN_PITCH = 0.78; // vs a 0.72 diameter, so 0.06 of slack per gap
-const ROW_PITCH = 0.80; // 0.08 of slack per gap
-const LOWER_ROW_PITCH = 0.75; // keeps force chains close while fitting the full lower band
+// Derived from the coin, so a resized coin keeps the same slack: at the 0.36 radius these are the
+// 0.78 / 0.80 / 0.75 the pile was tuned with.
+const COLUMN_PITCH = COIN_RADIUS * 2 + 0.06; // 0.06 of slack per gap
+const ROW_PITCH = COIN_RADIUS * 2 + 0.08; // 0.08 of slack per gap
+const LOWER_ROW_PITCH = COIN_RADIUS * 2 + 0.03; // keeps force chains close while fitting the band
 // A seeded front coin keeps roughly three quarters of a diameter of table ahead of its rim. The old
 // 0.04 gap put the front row at the tipping point, so the first normal stroke paid it out before the
 // player had added enough coins to complete a force chain.
@@ -199,7 +218,8 @@ const LOWER_ROW_PITCH = 0.75; // keeps force chains close while fitting the full
 // and shoves the front row about 0.7 forward before anything sleeps, and the longer stroke made
 // that shove harder. Sizing this against the creep rather than against taste is the point: the
 // front row is meant to settle near the lip, just not over it.
-const LOWER_FRONT_GAP = 0.53;
+// 0.53 -> 0.85 with the three-layer seed: its front row sat close enough to the lip to slide off.
+const LOWER_FRONT_GAP = 0.85;
 // Ends of the band on the lower bed the blade never touches. The back end is the blade's forward
 // extreme, not its mid-stroke face: a coin is only genuinely out of reach when its back edge sits
 // forward of the furthest the blade ever travels. This used to measure from the mid-stroke face and
@@ -213,7 +233,7 @@ function lowerSeedBand() {
   const front = GAME.playfieldFrontZ + COIN_RADIUS + LOWER_FRONT_GAP;
   const back = Math.max(
     front,
-    GAME.pusherOriginZ - GAME.pusherAmplitude - GAME.pusherDepth / 2 - COIN_RADIUS - 0.04,
+    lowerBladeReachZ() - COIN_RADIUS - 0.04,
   );
   return { front, back, rows: Math.floor((back - front) / LOWER_ROW_PITCH) + 1 };
 }
@@ -224,6 +244,7 @@ const ROW_JITTER = 0.14;
 const COIN_JITTER_X = 0.04; // per coin, so neighbours differ by at most 0.04 < 0.06 of slack
 const COIN_JITTER_Z = 0.06; // per coin, at most 0.06 < 0.08 of slack
 const LOWER_COIN_JITTER_Z = 0.02; // preserve clearance at the tighter lower row pitch
+const LOWER_LAYER_LEAN = 0.1; // each lower layer sits this much further towards the lip
 
 // Widest a seeded coin centre may sit: inside the glass by a radius, less a margin. The lattice
 // is then cut to fit, so widening GAME.playfieldHalfWidth fills the extra room with real columns
@@ -275,8 +296,8 @@ function singleLayerSlot(index, seed, channel, perLayer) {
 }
 
 // Layer spacing has to follow the tunable thickness, or a thicker coin seeds the pile already
-// interpenetrating and cannon-es never resolves it. At the default 0.1 both expressions below
-// reduce to the constants they replaced (0.13 pitch, 0.07 resting centre).
+// interpenetrating and the solver never resolves it. At the old 0.1 coin both expressions below
+// reduced to the constants they replaced (0.13 pitch, 0.07 resting centre); 0.05 gives 0.14 / 0.045.
 // trayZ is where the tray actually is when the pile is seeded, which is not the origin: the
 // pile is seeded at full retreat so the settle can spend its whole budget on the forward
 // stroke. Seeding the upper tier against the origin instead drops those coins a full
@@ -337,11 +358,16 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
   const slot = singleLayerSlot(index, seed, 19, perLayer);
   const layer = Math.floor(index / perLayer);
   const row = Math.floor(slot / columns);
+  // Brick-bond the layers and lean each one a little further towards the lip: a lattice seeded
+  // straight up stands in towers that topple and slide off whole, while coins laid half over the
+  // gap below shingle into a heap whose front edge overhangs the bed.
+  const brickX = (layer % 2) * COLUMN_PITCH / 2;
+  const lean = layer * LOWER_LAYER_LEAN;
 
   return {
     tier: 'lower',
     x: clamp(
-      COLUMN_ORIGIN + columnOf(slot, columns) * COLUMN_PITCH + layerNudge(layer)
+      COLUMN_ORIGIN + columnOf(slot, columns) * COLUMN_PITCH + brickX + layerNudge(layer)
         + centeredNoise(row + layer * rows, 11, seed) * ROW_JITTER
         + centeredNoise(index, 13, seed) * COIN_JITTER_X,
       -SEED_MAX_X,
@@ -349,8 +375,8 @@ export function seedPosition(index, seed = 0, thickness = COIN_HEIGHT, trayZ = G
     ),
     y: thickness / 2 + 0.02 + layer * layerPitch,
     z: clamp(
-      front + row * LOWER_ROW_PITCH + centeredNoise(index, 17, seed) * LOWER_COIN_JITTER_Z,
-      front,
+      front + row * LOWER_ROW_PITCH + centeredNoise(index, 17, seed) * LOWER_COIN_JITTER_Z - lean,
+      Math.max(front - lean, GAME.playfieldFrontZ + COIN_RADIUS + 0.02),
       back,
     ),
   };

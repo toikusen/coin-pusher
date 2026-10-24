@@ -1,4 +1,8 @@
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
+import {
+  boardReclineFor, FLAT_CAMERA, FOLD_CAMERA, fovForAspect, PIN_BOARD,
+} from '../src/game/CoinPusher.js';
 import { nodeBoxes, overallBounds, readGlb } from './glb.js';
 import { GAME } from '../src/game/config.js';
 
@@ -10,13 +14,28 @@ import { GAME } from '../src/game/config.js';
 // height above slotY; local z + slotZ is world z; the player is at -Z.
 const MODEL = 'public/models/slot.glb';
 
-// Where the camera's top sight line crosses the slot's depth: (0, 5.4, -9.4), 62 degree vertical
-// fov, dipping 26.57 degrees.
-const cameraTopY = () => {
-  const CAMERA_Y = 5.4;
-  const CAMERA_Z = -9.4;
-  const pitch = Math.atan2(5.4 - 0.4, 0.6 - CAMERA_Z);
-  return CAMERA_Y + (GAME.slotZ - CAMERA_Z) * Math.tan((62 / 2) * (Math.PI / 180) - pitch);
+// Where the crown lands in both camera poses - lying flat and stood up on a foldable - at the
+// Duo's 0.87 canvas. Model-local bounds are at scale 1; the machine is enlarged by slotScale.
+const crownInFrame = (bounds) => {
+  const aspect = 669 / 768;
+  const crown = new THREE.Vector3(
+    (bounds.max[0] * GAME.slotScale),
+    GAME.slotY + bounds.max[1] * GAME.slotScale,
+    GAME.slotZ + bounds.min[2] * GAME.slotScale,
+  );
+  // As the game draws it: the slot reclines with the board about its sill (boardReclineFor), and
+  // stood up the frame slides to put that sill on the fold (-0.0184).
+  const pivot = new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1);
+  return [[FLAT_CAMERA, fovForAspect(aspect), 0], [FOLD_CAMERA, FOLD_CAMERA.fov, 1]].every(([pose, fov, fold]) => {
+    const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 100);
+    camera.position.set(...pose.position);
+    camera.lookAt(...pose.target);
+    camera.updateMatrixWorld();
+    const recline = boardReclineFor(camera.getWorldDirection(new THREE.Vector3()));
+    const shift = (-0.0184 - pivot.clone().project(camera).y) * fold;
+    const ndc = crown.clone().sub(pivot).applyAxisAngle(new THREE.Vector3(1, 0, 0), recline).add(pivot).project(camera);
+    return ndc.y + shift < 1 && Math.abs(ndc.x) < 1;
+  });
 };
 
 const box = (x, y, z) => ({ x, y, z });
@@ -104,13 +123,6 @@ describe('slot machine model', () => {
     expect(bounds.min[1]).toBeCloseTo(0, 3);
   });
 
-  // The camera is at (0, 5.4, -9.4) with a 62 degree vertical fov, dipping 26.57 degrees. Its top
-  // sight line reaches y 5.82 at the slot's depth; the machine stands on slotY. A taller model is
-  // one whose crown - the part carrying the marquee motif - is cropped off the top of the shot.
-  it('keeps its crown inside the frame', () => {
-    expect(GAME.slotY + bounds.max[1]).toBeLessThan(cameraTopY());
-  });
-
   // buildBonusStage() finds the pane by material name, measures it and lays the canvas readout
   // 0.01 in front. Three symbols get an even third of that width each, so the mullions have to
   // land on the thirds or the drums read as misaligned with their own dividers.
@@ -160,7 +172,7 @@ describe('Tripo slot machine model', () => {
   it('is born at slotWidth, standing on y = 0, inside the shot', () => {
     expect(bounds.max[0] - bounds.min[0]).toBeCloseTo(GAME.slotWidth, 3);
     expect(bounds.min[1]).toBeCloseTo(0, 3);
-    expect(GAME.slotY + bounds.max[1]).toBeLessThan(cameraTopY());
+    expect(crownInFrame(bounds)).toBe(true);
   });
 
   it('carries exactly one reel pane, in the model\'s front half', () => {

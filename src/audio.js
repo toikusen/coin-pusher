@@ -35,6 +35,13 @@ export class GameAudio {
   }
 
   drop() { this.tone(260, 0.12, 'triangle', 0.025); }
+  // Pin board: a bright tick off a pin, a deeper thump off a bumper, both louder for harder hits.
+  // The pitch wanders a little so a cascade of pins does not read as one note repeating.
+  boardHit(kind, strength) {
+    const wander = 1 + (Math.random() - 0.5) * 0.25;
+    if (kind === 'bumper') this.tone(330 * wander, 0.14, 'square', 0.02 * strength);
+    else this.tone(1400 * wander, 0.05, 'sine', 0.012 * strength);
+  }
   payout(premium = false) {
     this.tone(premium ? 720 : 540, 0.16, 'sine', 0.035);
     this.tone(premium ? 980 : 760, 0.18, 'sine', 0.025, 0.08);

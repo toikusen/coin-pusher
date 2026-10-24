@@ -11,10 +11,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "cannon-es": "0.20.0",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3",
+    "@dimforge/rapier3d-compat": "0.21.0",
+    "@dimforge/rapier3d-simd-compat": "0.21.0",
     "three": "0.185.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.3",
     "vite": "8.2.0",
     "vitest": "4.1.10"
   }

@@ -14,6 +14,25 @@ export function coinPhase(coin, position) {
   return null;
 }
 
+// How far below the deck top (y = 0) a coin's centre has to be before it counts as falling.
+// Resting coins sit at about +0.05, so this is a coin that has already left the bed.
+export const NATURAL_FALL_Y = -0.3;
+
+// The coin's own phases, without coinPhase's nudge. A coin is left to teeter at the lip for as
+// long as the pile lets it - that hang is what makes the player drop one more - and is only
+// latched as falling once it has actually gone over: centre past the bed's real front face and
+// below the deck. z alone is not enough, a Rapier cylinder can sit on the corner or the pile
+// past the face. The fall check runs before `lost` so one long step cannot skip the payout.
+// ponytail: no hold timer. Headless runs teetered up to 27s with payouts never stalling; add a
+// late nudge only if a parked coin is ever seen damming the pile.
+export function coinFallPhase(coin, position) {
+  if (coin.counted) return null;
+  if (coin.falling && position.y < GAME.trayY) return 'score';
+  if (!coin.falling && position.z < GAME.playfieldFrontZ && position.y < NATURAL_FALL_Y) return 'fall';
+  if (position.y < GAME.lostY) return 'lost';
+  return null;
+}
+
 export function calculateReward(coins, previousCombo, elapsedSinceScore) {
   const base = coins.reduce(
     (sum, coin) => sum + (coin.isPremium ? GAME.premiumValue : GAME.regularValue),
@@ -114,48 +133,6 @@ export function quakeKick(random = Math.random) {
 // table off the symbol.
 export function slotWin(faces) {
   return faces[0] === faces[1] && faces[1] === faces[2] ? faces[0] : null;
-}
-
-// Aim is expressed from the player's view: -1 is screen-left and +1 is screen-right. The camera
-// faces world +Z, which mirrors world X on screen, hence the minus sign in the conversion.
-// The reach aim maps onto: the rail's half-width, or the part of it the window can frame, less the
-// launcher's own half-width so the muzzle stops at the edge instead of past it. fov is vertical, so
-// aspect is the only thing that moves this - a tall narrow window runs out of room first.
-export function launcherReachFor(fovDegrees, aspect, depth, margin = 0) {
-  const framed = Math.tan((fovDegrees * Math.PI) / 360) * depth * aspect;
-  return Math.max(0, Math.min(GAME.launcherTravelHalfWidth, framed - margin));
-}
-
-// halfWidth is the reach aim maps onto, not a fixed constant: the rail is in front of the
-// machine and close to the camera, so a narrow window sees less of it than launcherTravelHalfWidth
-// and the muzzle would slide off screen at full aim. CoinPusher passes what it can actually frame.
-export function launcherXFor(aim, halfWidth = GAME.launcherTravelHalfWidth) {
-  const clamped = Math.min(Math.max(Number.isFinite(aim) ? aim : 0, -1), 1);
-  const reach = Number.isFinite(halfWidth) ? halfWidth : GAME.launcherTravelHalfWidth;
-  return clamped === 0 ? 0 : -clamped * reach;
-}
-
-// One fixed landing point, like a real machine's chute: aim moves it across the playfield, never
-// along it. dropZoneZ stays over the moving tray for the whole stroke (tests/physics.test.js
-// "drop zone"), so a world-fixed endpoint still always lands on the tray.
-// Deliberately the full rail width, never the framed reach: where a shot lands is a rule of the
-// game and must not change with the window's shape. The launcher is what gives ground when the
-// frame is narrow - it stops short and the barrel turns to cover the rest, see launcherYawFor.
-export function launcherTargetFor(aim) {
-  return {
-    x: launcherXFor(aim),
-    z: GAME.dropZoneZ,
-  };
-}
-
-// Where the barrel points: at the spot the shot lands, so a launcher parked short of its target
-// still reads as aiming there rather than firing sideways out of a straight tube. The launcher
-// only travels as far as the frame allows, so this is the whole of what covers the last stretch
-// to the playfield's edges on a narrow window.
-export function launcherYawFor(launcherX, targetX, reach = GAME.dropZoneZ - GAME.launcherMuzzleZ) {
-  const cap = (GAME.launcherFanDegrees * Math.PI) / 180;
-  // The model points +Z, and a yaw of t about Y sends +Z to (sin t, 0, cos t) - hence x over z.
-  return Math.min(Math.max(Math.atan2(targetX - launcherX, reach), -cap), cap);
 }
 
 // Gravity has to match the world CoinPusher builds, or the derivation below stops describing it.

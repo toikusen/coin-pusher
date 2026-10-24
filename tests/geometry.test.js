@@ -17,7 +17,7 @@ describe('machine geometry tuning', () => {
     expect(geometry.scraperZ).toBe(3.8);
     expect(geometry.upperCenterZ).toBe(2);
     // scraperZ 3.8 less the drop point's clearance gap and a coin radius.
-    expect(geometry.dropZoneZ).toBeCloseTo(2.82, 8);
+    expect(geometry.dropZoneZ).toBeCloseTo(3.8 - config.GAME.dropZoneScraperGap - config.COIN_RADIUS, 8);
     expect(geometry.lowerFrontZ).toBeCloseTo(-4.2, 8);
     expect(geometry.lowerBackZ).toBeCloseTo(3.8, 8);
     expect(geometry.edgeZ).toBeCloseTo(-4.15, 8);
@@ -32,7 +32,8 @@ describe('machine geometry tuning', () => {
     const frontMostBackEdge = geometry.upperCenterZ - config.GAME.pusherAmplitude
       - config.GAME.pusherDepth / 2 + geometry.upperLength;
 
-    expect(frontMostBackEdge).toBeGreaterThanOrEqual(geometry.scraperZ + 0.08);
+    // 1e-9: machineGeometryFor raises upperLength to exactly this bound, which floats miss by an ulp.
+    expect(frontMostBackEdge).toBeGreaterThanOrEqual(geometry.scraperZ + 0.08 - 1e-9);
   });
 
   it('ignores non-finite saved values', () => {

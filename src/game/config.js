@@ -2,7 +2,8 @@
 // applyMachineGeometry(), and every consumer reads GAME at call time so a live machine follows.
 // Everything else here is a constant - change it in this file, not at runtime.
 export const GAME = {
-  startingCredits: 50,
+  // Infinity = free play: every credit check and decrement stays valid with no special case.
+  startingCredits: Infinity,
   missionTarget: 25,
   premiumChance: 0.16,
   premiumValue: 3,
@@ -13,11 +14,22 @@ export const GAME = {
   autoInterval: 0.9,
   // Tied to playfieldFrontZ by exactly 0.05 - "keeps the payout crossing aligned with the
   // shortened front edge" asserts it, so the two always move together.
-  edgeZ: -4.65,
+  edgeZ: -1.59,
   trayY: -1.4,
   lostY: -6,
-  pusherSpeed: 1.9,
-  payoutTilt: 1.2,
+  // 1.9 -> 2.8 with the stroke's 2.18 -> 0.9: cycle 3.31s -> 2.24s. At 2.5 this stroke let the tray
+  // back up to 33 coins and paid 4 while idle on one seed; 3.1 spilled the load on every seed.
+  pusherSpeed: 2.8,
+  // 1.2 -> 1.35 with the 1.0 stroke and 2.0 dead span: 1.2 paid 5 / 9 / 4 / 6 / 9 over five pile
+  // seeds, 1.5 paid 10 / 19 / 14 / 12 / 10, and this sits between at 12 / 13 / 14 / 10 / 9.
+  // 1.35 -> 1.9 with the move to Rapier, the 0.27 coin, the deep seeded pile and soft contacts.
+  // Calibrated with the drainage run over five pile seeds: nothing paid idle, at most a couple of
+  // hanging coins on the first drop, 25-33 paid from 68 drops in a minute, and the bed holding
+  // 3-4 layers with coins hanging on the lip.
+  // 1.9 -> 0.9 once coins stopped being thrown off the lip (rules.js coinFallPhase): the slope was
+  // what carried the pile forward between strokes. Headless, 1 drop per 0.9s for 90s: paid 51 -> 39
+  // of 100, coins hanging at the lip unchanged (11.2 -> 11.6). Drainage run: 12-20 paid from 68.
+  payoutTilt: 0.9,
   // Interior half-width, measured to the inner face of the glass. Every part of the cabinet is
   // cut from this and physics.js fills it with as many seed columns as clear the walls, so this
   // is the one number to move when the machine should feel wider. The camera does not follow it,
@@ -46,7 +58,10 @@ export const GAME = {
   // had before the lip. The 0.15 is that creep's headroom, and physics.js's LOWER_FRONT_GAP moved
   // with it by the same amount so the seeded pile sits exactly where it did relative to the blade.
   // Measured with dbg over five pile seeds: worst front coin ends at -4.52, i.e. 0.13 clear.
-  playfieldFrontZ: -4.70,
+  // -4.70 -> -1.64 with the shorter stroke (see pusherAmplitude): the blade reached too far into
+  // the lower half, and the bed's front follows its forward extreme - closer now, 2.0 instead of 2.5,
+  // because the bed in front of the tray also read as sticking out too far.
+  playfieldFrontZ: -1.64,
   // 4 -> 4.36 keeps the cabinet wall behind the scraper after the upper strip gains half a coin.
   playfieldBackZ: 4.36,
   // These three place the moving assembly, and none of them is the knob for how much tray the
@@ -106,8 +121,29 @@ export const GAME = {
   // if it reads loose - it is the only one that touches speed without touching any of the geometry.
   // 1.7/2.0 -> 1.88/2.18 keeps the forward extreme at -0.3 while moving the retreat extreme
   // 0.36 deeper. The full stroke gains the same half-coin distance the upper coins now travel.
-  pusherOriginZ: 1.88,
-  pusherAmplitude: 2.18,
+  // 1.88/2.18 -> 3.16/0.9, over four requests: the tray reached too far forward into the lower
+  // half. The rear extreme (origin + amplitude, 4.06) stands still, so the tray's strip, the landing
+  // point and the pin board above it do not move; the forward extreme comes back 2.56, -2.2 -> 0.36.
+  // What made a stroke this short work is the dead span: lengthening it starves the lip (3.5 paid
+  // 2-5, 4.0 paid 0-4) and at 2.5 a 1.08 stroke was erratic (3-11) and spilled the seeded pile at
+  // load, but shortening it to 2.0 restores the force chain. Over five pile seeds (777 / 31 / 4242 /
+  // 99 / 2024), with pusherSpeed 2.8 and payoutTilt 1.35: 18 / 19 / 13 / 14 / 10, nothing paid idle
+  // or on the first drop. Two seeds spill a coin or two during the load settle, which CoinPusher
+  // discards unseen. 0.8 spilled on every seed and paid on the first drop. Shifting the whole assembly back instead
+  // was tried and is a no-op: keeping the strip means the scraper and back wall go too, and the
+  // machine just slides 0.5 with its proportions unchanged.
+  pusherOriginZ: 3.16,
+  pusherAmplitude: 0.9,
+  // The lower blade is its own body with its own, shorter stroke: same phase and same full-retreat
+  // position as the tray's front, so it only ever trails behind the tray, never out in front. The
+  // tray keeps the full 0.9 - its scraper hand-off needs every bit of it (0.6 on the shared body
+  // jammed the tray at 150+ coins) - while the bed is pushed less far and less hard, so the pile
+  // builds into a clump that hangs over the lip. Headless, 15 min of 1 drop / 0.9 s: 0.9 keeps ~95
+  // on the bed with 2-5 hanging; 0.65 levels off at 210-365 with 4-25 hanging and pays ~90% back
+  // once full; 0.6 and below never level off - the bed passed 500 coins and the step time kept
+  // climbing (0.55: 673 coins, 5.7 ms) - which on a phone is a slideshow. 0.75 levels at ~200 with
+  // 4-7 hanging. Lower than 0.65 needs a way for the bed to shed coins (side gutters) first.
+  lowerBladeAmplitude: 0.65,
   // 2.8 -> 3.2, paired with pusherRearExtension 1.85 -> 1.65 so the tray's rear edge does not move
   // at all: depth/2 + rearExtension is unchanged, and the whole 0.4 goes into the front lip, which
   // travels 0.2 towards the player. That is what buys dropZoneZ its room - the lip at full retreat
@@ -210,10 +246,13 @@ export const GAME = {
   // onto the lower bed instead of being swept. 2.05 was hard against that wall, which is why the
   // second step had to move the lip - see pusherDepth. 1.85 leaves the usual 0.04, and "drop zone"
   // guards it with the coin's radius rather than its centre.
-  // It is also the launcher's landing point now - see launcherTargetFor.
+  // It is also where every coin leaves the pin board onto the tray - see PIN_BOARD in CoinPusher.js.
   // 1.85 -> 2.20 with the tray's lip, which is the wall it is measured against. Still 0.04 clear.
   // 2.20 -> 2.56 follows the retreating tray and keeps the same landing clearance at both ends.
-  dropZoneZ: 2.56,
+  // 2.56 -> 3.06 is not a move: it is what machineGeometryFor derives from the defaults, and so
+  // where the game has really been landing coins. The literal had drifted, and the tests that read
+  // it were checking a landing point the game never used - the payout guard included.
+  dropZoneZ: 3.06,
   // How much clear tray the landing keeps between the coin's back edge and the scraper's face.
   // What sets the landing point is now this gap, not the tray's front lip: the lip bound only ever
   // said "far enough back not to spill on arrival", which put every drop 0.04 from the spill line -
@@ -258,8 +297,8 @@ export const GAME = {
   // 1.24 -> 0.76: the old value ended the arc 0.48 above the tray. Both the coin's forward motion
   // and the guide line stopped dead in mid-air there and the coin then free-fell the rest, which
   // read as a bounce off the scraper standing behind it at that exact height.
-  launcherLandingY: 0.76,
-  launcherFlightTime: 0.56,
+  // 0.76 -> 0.735 with the coin thinned from 0.1 to 0.05.
+  launcherLandingY: 0.735,
   // Peak of the scripted flight, on top of the muzzle-to-landing lerp, so the apex is roughly
   // 0.95 + this. 1.5 -> 2.6 for a visibly steeper launch; the ceiling is the cabinet's window
   // opening, and at 2.6 the coin tops out at 3.55 near z -0.95, which is still inside it. Much
@@ -343,13 +382,16 @@ export const GAME = {
   // Released from just under the slot machine. Higher and the cabinet's top frame hides the first
   // half of the fall; lower and it appears already on top of the tray.
   chestStartY: 3.4,
-  // Slot machine, mounted at the top of the machine. Deliberately NOT on the cabinet model's own
-  // crown: that sits at y 9.1 and the camera, framed on the bed, tops out around y 5.8 at the front
-  // - anything on the real crown is off screen. This hangs it just under the cabinet's top band
-  // instead, which is the highest point of the machine the player can actually see.
+  // Slot machine, crowning the pin board over the upper tray, the way a real pusher carries its
+  // display above the playfield. It used to hang over the bed's front, which only worked for the
+  // flat camera: stood up on a foldable, that put it across the fold on top of the pusher. Its
+  // beam is the rail the dropper carriage rides. slotWidth is the width the model is authored at
+  // (tools/build_slot.py, tests/slot.test.js); slotScale enlarges it for the distance it moved.
   slotWidth: 2.24,
-  slotY: 4.55,
-  slotZ: -4,
+  slotScale: 2.0,
+  // 7.9 -> 8.9 with the pin board's extra unit: the crown now sits just under the HUD.
+  slotY: 8.9,
+  slotZ: 3.2,
   // tools/build_slot.py authors the machine facing -Z, which is where the player stands, so
   // there is nothing to turn. Kept as a key rather than dropped: a swapped-in model that faces
   // the other way is one number away from working again.
@@ -386,19 +428,18 @@ export const GAME = {
   // through the slotOutcomes symbols and nothing else, so every frame of the spin is a live
   // possibility rather than filler. tests/rules.test.js holds the two apart.
   slotIdleSymbol: '?',
-  // Money-bag payout: coins rain over the upper tray from just under the slot machine. They are
-  // real coins, not score - the prize is a loaded tray, which pays itself out through the normal
-  // push-and-drop loop. Metered one every coinRainInterval rather than spawned in one frame:
-  // forty bodies created inside each other is a solver explosion, and a stream reads better.
+  // Money-bag payout: coins burst from the top of the pin board, under the slot, and rain down
+  // through the pins and bumpers. They are real coins, not score - the prize is a loaded tray, which
+  // pays itself out through the normal push-and-drop loop. Metered one every coinRainInterval: a
+  // stream reads better than one clump, and the board path lands them where every drop lands.
   coinRainCount: 40,
   coinRainInterval: 0.05,
-  coinRainY: 3.9,
-  // The same margin a dropped chest gets (playfieldHalfWidth less a chest width): far enough
-  // inside the glass and the hidden corner posts that nothing lands on a wall.
-  coinRainHalfWidth: 2.85,
-  // Spread around dropZoneZ, which is already guarded to sit over the upper tray for the whole
-  // pusher stroke - so every rained coin lands somewhere the scraper will eventually sweep.
-  coinRainDepth: 0.8,
+  // Thrown from the dropper's mouth, where every coin enters the board, with this much headroom over
+  // the board's top for the upward throw to arc into - under the carriage, so nothing leaves frame.
+  coinRainHeadroom: 0.6,
+  // Board-plane launch speeds, [min, max]: sideways (either way) and up. The board caps at 9.
+  coinRainSpread: Object.freeze([1.5, 7]),
+  coinRainLift: Object.freeze([1, 4]),
   // Earthquake payout: the cabinet shakes and the pile walks towards the payout lip. The kick is
   // an acceleration applied every frame for quakeSeconds, not one impulse: a single shove throws
   // the top layer over the glass and leaves the bottom one untouched, while a sustained rattle
@@ -456,46 +497,60 @@ export const PALETTE = Object.freeze({
   glassTint: 0x1d5c66,
 });
 
+/**
+ * Whether to start on the cheap render path. WebKit (every iOS browser and the app's WebView)
+ * reports no deviceMemory, so a missing value means unknown, not small - reading it as 4 GB put
+ * every iPhone on 1.25x pixels without antialiasing. A slow device still steps itself down
+ * (adaptQuality) once it is seen dropping frames.
+ */
+export function isLowPower({ reducedMotion = false, memory, cores }) {
+  if (reducedMotion) return true;
+  if (memory !== undefined && memory <= 2) return true;
+  return cores !== undefined && cores <= 2;
+}
+
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
 export function getQualityProfile() {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const memory = navigator.deviceMemory ?? 4;
-  const cores = navigator.hardwareConcurrency ?? 4;
-  const lowPower = reducedMotion || memory <= 4 || cores <= 4;
+  const lowPower = isLowPower({
+    reducedMotion, memory: navigator.deviceMemory, cores: navigator.hardwareConcurrency,
+  });
 
   return Object.freeze({
     lowPower,
     reducedMotion,
     pixelRatio: Math.min(window.devicePixelRatio || 1, lowPower ? 1.25 : 1.75),
-    shadows: !lowPower,
-    // Keep the lower bed as a sparse single layer at startup. The remainder lives on the
-    // moving tray and feeds the bed naturally once play begins; starting with ~100 coins made
-    // the 48-slot lower bed two to three layers deep before the player could take a turn.
-    seedCount: lowPower ? 24 : 26,
-    // Leave room for player drops while bounding collision pairs, shadows, and draw calls.
-    coinCap: lowPower ? 116 : 144,
+    // ponytail: off on iOS - its WebKit renders the shadow map as solid shadow (the whole
+    // backboard and deck went black in the simulator). Re-test on a device before turning it on.
+    shadows: !lowPower && !isIOS(),
+    // LOWER_SEED_COUNT (110, about what the bed holds in play) plus 30 riding the tray.
+    seedCount: 140,
+    // Ceiling on coins in play; past it CoinPusher takes buried ones out of the back of the pile.
+    // Every coin stays awake - the blade keeps the whole connected pile moving - so the step cost
+    // is linear in the count. An iPhone ran ~16x slower per step than a desktop and dropped to
+    // 20 fps at ~230 coins on the plain Rapier build; the SIMD build (world.js) roughly halves the
+    // step, so 300 should fit a frame - to be confirmed on the phone with the dev overlay.
+    // ponytail: a device guess. Upgrade path: drive it from the measured step time.
+    maxLiveCoins: lowPower || isIOS() || window.matchMedia('(pointer: coarse)').matches ? 300 : 400,
     sparkCount: reducedMotion ? 0 : lowPower ? 32 : 56,
-    // Flat coins tip on tiny impulse errors: a coin's moment about a diameter is only
-    // ~0.006, so a 0.001 N.s solver residual at the rim spins it several degrees a second.
-    // Under-iterating shows up as the pile visibly shivering in place rather than drifting.
-    // Averaged over pile seeds the original convergence knee was around 28. The normal
-    // profile keeps a little headroom for dense, moving stacks; the low-power path still
-    // gets the full stable baseline instead of dropping below it.
-    solverIterations: lowPower ? 28 : 32,
-    // Thin, stacked cylinders are much more stable at 120 Hz. Keep the 60 Hz path on
-    // constrained devices, where doubling every narrowphase pass is too expensive.
-    physicsStep: lowPower ? 1 / 60 : 1 / 120,
-    // Ceiling on how much physics one frame may run, not a quality knob. world.step() replays
-    // missed time as extra fixed steps, so a frame that already came in late replays several at
-    // once - at 8 that is a 100 ms+ hitch on a crowded pile, which is what the stutter looks
-    // like. cannon-es drops the leftover accumulator afterwards, so a lower cap costs a little
-    // slow motion on a struggling device instead of the hitch.
+    // Rapier's solver (world.js): its cylinders are exact and its contacts converge in a few
+    // iterations - cannon-es needed 28-32 here, and 120 Hz, to keep a flat coin from shivering.
+    solverIterations: 4,
+    physicsStep: 1 / 60,
+    // Ceiling on how much physics one frame may run, not a quality knob. A late frame replays
+    // the missed time as extra fixed steps; past this the leftover is dropped, so a struggling
+    // device runs a little slow-motion instead of hitching.
     physicsMaxSubSteps: lowPower ? 2 : 3,
   });
 }
 
 // Lives here, not in physics.js, because the geometry derivations below need it and physics.js
 // already imports this file - the other direction would be a cycle. physics.js re-exports it.
-export const COIN_RADIUS = 0.36;
+// 0.36 -> 0.27 with the move to Rapier, for piles three and four deep the way a real pusher's
+// are: the bed in front of the blade holds 24 coins a layer at this size against 9 at 0.36.
+export const COIN_RADIUS = 0.27;
 
 // The five geometry knobs the panel exposes, in the units the player sees: where the scraper
 // stands, and the centre/length of each deck. Everything else about the machine's Z layout is
@@ -504,12 +559,17 @@ export const COIN_RADIUS = 0.36;
 // The stroke itself is deliberately not among them. pusherAmplitude and pusherDepth carry the
 // payout calibration recorded above, so `upperLength` grows the tray's rear tail only: the blade
 // stays exactly one half-depth in front of the centre, and the sweep is untouched.
+// The bed length tools/build_cabinet.py authors the cabinet around: z_local +-4.53 is the bed's lip.
+// layoutGeometry scales the model by lowerLength over this, so it must not follow the default bed
+// length - when that went 9.06 -> 8.3, reading the default here left the cabinet 0.38 proud of the lip.
+export const CABINET_BED_LENGTH = 9.06;
+
 export const MACHINE_GEOMETRY_DEFAULTS = Object.freeze({
   scraperZ: 4.04,
-  upperCenterZ: 1.88,
+  upperCenterZ: 3.16,
   upperLength: 6.33, // pusherDepth + pusherRearExtension
-  lowerCenterZ: -0.17,
-  lowerLength: 9.06,
+  lowerCenterZ: 1.36,
+  lowerLength: 6.0,
 });
 
 // Slider bounds. Picked so no part can leave the cabinet at any combination:
@@ -540,10 +600,10 @@ export const MACHINE_GEOMETRY_DEFAULTS = Object.freeze({
 // wherever it stands, and the slider should be able to show the length that takes.
 export const MACHINE_GEOMETRY_LIMITS = Object.freeze({
   scraperZ: Object.freeze([2.9, 6]),
-  upperCenterZ: Object.freeze([1.2, 2.4]),
+  upperCenterZ: Object.freeze([1.2, 3.2]),
   upperLength: Object.freeze([5.6, 9]),
-  lowerCenterZ: Object.freeze([-0.45, 1.2]),
-  lowerLength: Object.freeze([7.6, 13]),
+  lowerCenterZ: Object.freeze([-0.45, 1.4]),
+  lowerLength: Object.freeze([6.0, 13]),
 });
 
 const clampGeometry = (key, value) => {
