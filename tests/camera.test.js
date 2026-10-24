@@ -5,11 +5,14 @@ import {
 } from '../src/game/CoinPusher.js';
 import { GAME } from '../src/game/config.js';
 
-// poseCamera's view offset, as a shift in NDC: it carries the sill onto the fold (-0.0184 on the
-// Duo's half-folded canvas), scaled in with the fold. Framing checks have to see what it sees.
-const FOLD_NDC = -0.0184;
-const sillShift = (camera, fold) =>
-  (FOLD_NDC - new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1).project(camera).y) * fold;
+// The Duo's two canvases, with where the fold falls in each in NDC: flat, under the HUD (669 x 768);
+// stood up, from the top of the display with the fold 475.5 pt down (669 x 812, html[data-stood]).
+const FLAT_VIEW = { aspect: 669 / 768, foldNdc: -0.0184 };
+const STOOD_VIEW = { aspect: 669 / 812, foldNdc: 1 - (2 * 475.5) / 812 };
+// poseCamera's view offset, as a shift in NDC: it carries the sill onto the fold, scaled in with
+// the fold. Framing checks have to see what it sees.
+const sillShift = (camera, fold, view = STOOD_VIEW) =>
+  (view.foldNdc - new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1).project(camera).y) * fold;
 
 // The game camera: setupScene's position and target, with the fov the resize handler picks.
 function cameraFor(aspect) {
@@ -48,8 +51,8 @@ describe('camera framing', () => {
 
 
 describe('fold view framing', () => {
-  // The Duo's inner display half-folded: a 669 x 768 canvas with the fold just under its middle.
-  const camera = new THREE.PerspectiveCamera(FOLD_CAMERA.fov, 669 / 768, 0.1, 100);
+  // The Duo's inner display stood up: the HUD is off the canvas and the fold is above its middle.
+  const camera = new THREE.PerspectiveCamera(FOLD_CAMERA.fov, STOOD_VIEW.aspect, 0.1, 100);
   camera.position.set(...FOLD_CAMERA.position);
   camera.lookAt(...FOLD_CAMERA.target);
   camera.updateMatrixWorld();
@@ -153,10 +156,16 @@ describe('hinge blend', () => {
   // The bug this guards: both poses framed the machine, but the straight-line blend between them
   // did not - at a 102 degree hinge the bed's lip sat under the controls. Every hinge angle the
   // game can be asked for has to keep the lip and the slot's crown in frame.
+  // The canvas changes with the layout at the stood-up switch, and inside its dead band either
+  // layout can be showing, so both are checked there.
   it('keeps the lip and the slot\'s crown in frame at every hinge angle', () => {
-    const aspect = 669 / 768;
     const lerp = (from, to, t) => from.map((value, index) => value + (to[index] - value) * t);
+    const cases = [];
     for (let degrees = 180; degrees >= 90; degrees -= 5) {
+      for (const stood of [false, true]) if (stoodFor(stood, degrees) === stood) cases.push([degrees, stood ? STOOD_VIEW : FLAT_VIEW]);
+    }
+    for (const [degrees, view] of cases) {
+      const { aspect } = view;
       const t = foldFor(degrees);
       const camera = new THREE.PerspectiveCamera(
         fovForAspect(aspect) + (FOLD_CAMERA.fov - fovForAspect(aspect)) * t, aspect, 0.1, 100,
@@ -164,7 +173,7 @@ describe('hinge blend', () => {
       camera.position.set(...lerp(FLAT_CAMERA.position, FOLD_CAMERA.position, t));
       camera.lookAt(...lerp(FLAT_CAMERA.target, FOLD_CAMERA.target, t));
       camera.updateMatrixWorld();
-      const shift = sillShift(camera, t);
+      const shift = sillShift(camera, t, view);
       for (const x of [-4.08, 4.08]) {
         const lip = new THREE.Vector3(x, 0, GAME.playfieldFrontZ).project(camera);
         lip.y += shift;

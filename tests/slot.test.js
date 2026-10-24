@@ -14,25 +14,31 @@ import { GAME } from '../src/game/config.js';
 // height above slotY; local z + slotZ is world z; the player is at -Z.
 const MODEL = 'public/models/slot.glb';
 
-// Where the crown lands in both camera poses - lying flat and stood up on a foldable - at the
-// Duo's 0.87 canvas. Model-local bounds are at scale 1; the machine is enlarged by slotScale.
+// Where the crown lands in both camera poses - lying flat and stood up on a foldable - on the
+// Duo's canvas for each: 669 x 768 under the HUD, 669 x 812 stood up with the HUD off it and the
+// fold 475.5 pt down (html[data-stood]). Model-local bounds are at scale 1; the machine is
+// enlarged by slotScale.
 const crownInFrame = (bounds) => {
-  const aspect = 669 / 768;
   const crown = new THREE.Vector3(
     (bounds.max[0] * GAME.slotScale),
     GAME.slotY + bounds.max[1] * GAME.slotScale,
     GAME.slotZ + bounds.min[2] * GAME.slotScale,
   );
   // As the game draws it: the slot reclines with the board about its sill (boardReclineFor), and
-  // stood up the frame slides to put that sill on the fold (-0.0184).
+  // stood up the frame slides to put that sill on the fold.
   const pivot = new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1);
-  return [[FLAT_CAMERA, fovForAspect(aspect), 0], [FOLD_CAMERA, FOLD_CAMERA.fov, 1]].every(([pose, fov, fold]) => {
+  const flat = 669 / 768;
+  const stood = 669 / 812;
+  return [
+    [FLAT_CAMERA, fovForAspect(flat), flat, 0, 0],
+    [FOLD_CAMERA, FOLD_CAMERA.fov, stood, 1, 1 - (2 * 475.5) / 812],
+  ].every(([pose, fov, aspect, fold, foldNdc]) => {
     const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 100);
     camera.position.set(...pose.position);
     camera.lookAt(...pose.target);
     camera.updateMatrixWorld();
     const recline = boardReclineFor(camera.getWorldDirection(new THREE.Vector3()));
-    const shift = (-0.0184 - pivot.clone().project(camera).y) * fold;
+    const shift = (foldNdc - pivot.clone().project(camera).y) * fold;
     const ndc = crown.clone().sub(pivot).applyAxisAngle(new THREE.Vector3(1, 0, 0), recline).add(pivot).project(camera);
     return ndc.y + shift < 1 && Math.abs(ndc.x) < 1;
   });

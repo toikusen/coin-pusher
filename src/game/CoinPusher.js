@@ -81,11 +81,14 @@ const FRAME_ASPECT = 0.87;
 export const FLAT_CAMERA = { position: [0, 5.25, -7.5], target: [0, 4, 0] };
 // ~25 degrees. Solved with the board turned square to it (boardReclineFor) and the sill carried
 // onto the fold by poseCamera's view offset, so neither is a constraint on the pose itself - what
-// is: the lip low in the frame, the slot's crown under the HUD, and both held at every step of the
-// blend from FLAT_CAMERA (tests/camera.test.js). Searched together with FLAT_CAMERA, not on its own:
-// two poses that each framed the machine once cut the bed off part-way through the blend. The
-// coin tray under the lip fills the band below it - see chuteZ.
-export const FOLD_CAMERA = { fov: 66, position: [0, 12, -8.5], target: [0, 8, 0] };
+// is: the lip's corners inside the frame's sides and above its bottom, the slot's crown inside its
+// top, and all of it held at every step of the blend from FLAT_CAMERA, on whichever layout the
+// hinge has switched to (tests/camera.test.js). Within those, the widest pin board: searched over
+// position, target and fov for the stood-up layout, where the canvas runs to the top of the display
+// (html[data-stood]). Backing off and narrowing the fov from 66 flattens the perspective, so the
+// board grows ~18% while the nearer lip stays in. The coin tray under the lip fills the band below
+// it - see chuteZ.
+export const FOLD_CAMERA = { fov: 50, position: [0, 14, -10.5], target: [0, 9, 0] };
 // The pin board coins fall through, standing over the drop zone. Coins exit at its bottom onto the
 // tray - the same z as ever, so every coin still lands on the moving tray - and its half-width is
 // the old landing spread, so pins scatter the drop without ever throwing it off the tray.
