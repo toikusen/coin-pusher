@@ -346,6 +346,11 @@ const FRONT_TRIM_DEPTH = 0.04;
 const frontTrimZ = () => GAME.playfieldFrontZ - 0.002 + FRONT_TRIM_DEPTH / 2;
 const CHUTE_FLOOR_Y = -1.6; // top face; under trayY (-1.4), so a coin resting here has scored
 const CHUTE_WALL_TOP = -1.0;
+// The payout slot: a solid front panel whose back face stands this far in front of the lip, so the
+// only opening is a dark slit under the bed's front edge. Its top sits over CHUTE_WALL_TOP to hide
+// the tray floor from FOLD_CAMERA - a lit floor there read as coins landing on the ground.
+const FASCIA_GAP = 0.45;
+const FASCIA_TOP_Y = -0.65;
 // Trim finish. On a machine made of painted metal an emissive strip is the one thing that cannot
 // be a real object, so the gold reads as polished brass instead: same colour, same job marking an
 // edge, but lit by the room rather than glowing on its own.
@@ -362,8 +367,9 @@ export class CoinPusher {
     this.activeCoins = [];
     this.coinPool = [];
     this.createdCoins = 0;
-    // Long enough for paid coins to visibly gather in the tray under the lip before they go.
-    this.recycleDelay = 4;
+    // Paid coins go as they touch the tray: left to gather there for seconds, they read as coins
+    // dropped on the floor that blink out later.
+    this.recycleDelay = 0.38;
     this.frameId = 0;
     this.cleanup = [];
     this.launching = [];
@@ -711,17 +717,27 @@ export class CoinPusher {
     this.badgeTexture = this.createBadgeTexture();
   }
 
+  // Built as data, not drawn on a canvas: a canvas gradient that fades to transparent leaves the
+  // colour of its clear pixels undefined, and the iOS simulator filled them with garbage - the
+  // floor's light pool, a 64px texture stretched over 16 x 22 units, came out as coloured specks.
+  // Here every texel is white and only alpha falls off, so there is no colour to go wrong.
   createGlowTexture() {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 64;
-    const context = canvas.getContext('2d');
-    const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gradient.addColorStop(0, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.3, 'rgba(255,255,255,.7)');
-    gradient.addColorStop(1, 'rgba(255,255,255,0)');
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, 64, 64);
-    return new THREE.CanvasTexture(canvas);
+    const size = 64;
+    const data = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const r = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2) / (size / 2);
+        // The old canvas stops: 1 at the centre, 0.7 at 0.3, 0 at the rim.
+        const alpha = r < 0.3 ? 1 - r : Math.max(0, 0.7 * (1 - (r - 0.3) / 0.7));
+        data.set([255, 255, 255, Math.round(alpha * 255)], (y * size + x) * 4);
+      }
+    }
+    const texture = new THREE.DataTexture(data, size, size);
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.needsUpdate = true;
+    return texture;
   }
 
   createBackTexture() {
@@ -2053,15 +2069,27 @@ export class CoinPusher {
     });
     const chuteFloor = this.addStaticBox(BED_WIDTH + 0.4, 0.3, 2, 0, CHUTE_FLOOR_Y - 0.15, chuteZ(), PALETTE.dark, { receiveShadow: true });
     this.decor.push(chuteFloor);
-    const chuteLip = this.addStaticBox(BED_WIDTH + 0.5, 0.09, 0.12, 0, CHUTE_WALL_TOP, chuteZ() - 1.07, PALETTE.gold, {
+    // A thin upright panel, not a block: FOLD_CAMERA looks down on this band, and a block's top
+    // face read as a grey slab jutting out of the cabinet. It collides, so a coin that comes off
+    // the lip fast stops behind it instead of landing in view on the hidden tray floor in front.
+    const fasciaBottom = CHUTE_FLOOR_Y - 0.3;
+    const fasciaDepth = 0.12;
+    const fasciaOffset = 1.1 - FASCIA_GAP - fasciaDepth / 2;
+    const fascia = this.addStaticBox(BED_WIDTH + 0.4, FASCIA_TOP_Y - fasciaBottom, fasciaDepth, 0, (FASCIA_TOP_Y + fasciaBottom) / 2, chuteZ() + fasciaOffset, PALETTE.scene, {
+      // Near-black and matte, the same as the cabinet's base it continues.
+      envMapIntensity: 0,
+      metalness: 0,
+      roughness: 1,
+    });
+    const fasciaTrim = this.addStaticBox(BED_WIDTH + 0.5, 0.06, 0.1, 0, FASCIA_TOP_Y, chuteZ() + 1.1 - FASCIA_GAP - 0.05, PALETTE.gold, {
       ...BRASS,
       ...this.surfaces.brushed,
       envMap: this.environmentTexture,
       visualOnly: true,
     });
-    // Lit payout chute, so the tray is not a black hole under the playfield.
+    // Lit inside the slit only, under the lip, so the opening reads as a lit mouth, not a floor.
     const chuteGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(BED_WIDTH + 0.2, 2.1),
+      new THREE.PlaneGeometry(BED_WIDTH + 0.2, 0.8),
       new THREE.MeshBasicMaterial({
         map: this.glowTexture,
         color: PALETTE.goldSoft,
@@ -2072,7 +2100,7 @@ export class CoinPusher {
       }),
     );
     chuteGlow.rotation.x = -Math.PI / 2;
-    chuteGlow.position.set(0, CHUTE_FLOOR_Y + 0.02, chuteZ());
+    chuteGlow.position.set(0, CHUTE_FLOOR_Y + 0.02, chuteZ() + 1.3);
     this.scene.add(chuteGlow);
     const wallHeight = CHUTE_WALL_TOP - CHUTE_FLOOR_Y + 0.3;
     const wallY = CHUTE_WALL_TOP - wallHeight / 2;
@@ -2082,11 +2110,14 @@ export class CoinPusher {
       this.addStaticBox(BED_WIDTH + 0.4, wallHeight, 0.2, 0, wallY, chuteZ() - 0.9, PALETTE.metal),
     ];
     this.decor.push(...chuteWalls);
+    // The tray itself stays a collider only: seen, it is the floor coins appeared to land on.
+    for (const mesh of [chuteFloor, ...chuteWalls]) mesh.visible = false;
     // The whole chute hangs off the front lip: offsets from chuteZ(), never absolute positions.
     this.chuteParts = [
       { mesh: chuteFloor, offset: 0 },
-      { mesh: chuteLip, offset: -1.07 },
-      { mesh: chuteGlow, offset: 0 },
+      { mesh: fascia, offset: fasciaOffset },
+      { mesh: fasciaTrim, offset: 1.1 - FASCIA_GAP - 0.05 },
+      { mesh: chuteGlow, offset: 1.3 },
       { mesh: chuteWalls[0], offset: 0 },
       { mesh: chuteWalls[1], offset: 0 },
       { mesh: chuteWalls[2], offset: -0.9 },
@@ -2982,7 +3013,8 @@ export class CoinPusher {
         coin.counted = true;
         coin.recycleAt = this.elapsed + this.recycleDelay;
         scored.push(coin);
-        this.emitParticles(coin.body.position.x, -1.5, coin.body.position.z, coin.isPremium ? 12 : 7, coin.isPremium);
+        // At the slot's mouth: the coin itself is already behind the fascia by now.
+        this.emitParticles(coin.body.position.x, FASCIA_TOP_Y, chuteZ() + 1.1 - FASCIA_GAP, coin.isPremium ? 12 : 7, coin.isPremium);
       } else if (phaseResult === 'lost') {
         this.recycleCoin(index);
       }
