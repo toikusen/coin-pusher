@@ -1,0 +1,168 @@
+// @vitest-environment node
+import { describe, expect, it } from 'vitest';
+import { PALETTE } from '../src/game/config.js';
+import { drawNocturne, drawBumperCap } from '../src/game/themes/nocturneArt.js';
+
+function recordingContext(size) {
+  const calls = [];
+  const stack = [];
+  const context = { canvas: { width: size, height: size }, calls };
+  const properties = ['fillStyle', 'strokeStyle', 'globalAlpha', 'lineWidth', 'font', 'textAlign', 'textBaseline', 'globalCompositeOperation', 'clipDepth'];
+  for (const property of properties) context[property] = property === 'globalAlpha' ? 1 : undefined;
+  for (const method of ['beginPath', 'closePath', 'moveTo', 'lineTo', 'rect', 'ellipse', 'arc', 'clip', 'translate', 'scale', 'setTransform', 'setLineDash', 'clearRect']) {
+    context[method] = (...args) => calls.push([method, ...args]);
+  }
+  context.clipDepth = 0;
+  context.clip = (...args) => { context.clipDepth += 1; calls.push(['clip', ...args]); };
+  for (const method of ['fill', 'stroke', 'fillRect', 'strokeRect', 'fillText']) {
+    context[method] = (...args) => calls.push([method, ...args, {
+      fill: context.fillStyle?.stops ?? context.fillStyle,
+      stroke: context.strokeStyle?.stops ?? context.strokeStyle,
+      alpha: context.globalAlpha, lineWidth: context.lineWidth, clipDepth: context.clipDepth,
+    }]);
+  }
+  context.save = () => { stack.push(properties.map((key) => context[key])); calls.push(['save']); };
+  context.restore = () => { const values = stack.pop(); properties.forEach((key, index) => { context[key] = values[index]; }); calls.push(['restore']); };
+  for (const method of ['createLinearGradient', 'createRadialGradient']) {
+    context[method] = (...args) => {
+      const gradient = { stops: [], addColorStop(offset, color) { this.stops.push([offset, color]); } };
+      calls.push([method, ...args, gradient.stops]);
+      return gradient;
+    };
+  }
+  context.measureText = (text) => ({ width: text.length * 8 });
+  context.getImageData = () => {
+    const data = new Uint8ClampedArray(size * size * 4);
+    for (let index = 0; index < data.length; index += 4) data.set([20, 30, 40, 255], index);
+    return { data };
+  };
+  context.putImageData = ({ data }, ...args) => {
+    context.pixels = data;
+    let checksum = 2166136261;
+    for (const value of data) checksum = Math.imul(checksum ^ value, 16777619) >>> 0;
+    calls.push(['putImageData', checksum, ...args]);
+  };
+  return context;
+}
+
+function fixture(size) {
+  const layout = {
+    width: 8, height: 5, pxPerUnit: { x: size / 8, y: size / 5 },
+    toCanvas: (x, y) => ({ u: (x + 4) * size / 8, v: (5 - y) * size / 5 }),
+    pins: [{ x: -1, y: 3 }, { x: 1, y: 3 }], pinRadius: 0.06,
+    bumpers: [{ x: -2, y: 2.5, radius: 0.3 }, { x: 2, y: 2.5, radius: 0.3 }, { x: 0, y: 1, radius: 0.4 }],
+    mouth: { x: 0, y: 4.5, halfWidth: 0.4 }, palette: PALETTE,
+  };
+  Object.values(layout).filter((value) => typeof value === 'object').forEach(Object.freeze);
+  return { map: recordingContext(size), emissive: recordingContext(size), layout: Object.freeze(layout) };
+}
+
+describe('drawNocturne', () => {
+  it.each([1024, 512, 256])('draws both layers at %i without mutating layout', (size) => {
+    const { map, emissive, layout } = fixture(size);
+    expect(() => drawNocturne(map, emissive, layout)).not.toThrow();
+    expect(map.calls.some(([method]) => method === 'fillText')).toBe(true);
+    expect(map.calls.some(([method]) => method === 'putImageData')).toBe(true);
+  });
+
+  it('fills emissive black and uses only mint for light, including gradient stops', () => {
+    const { map, emissive, layout } = fixture(512);
+    drawNocturne(map, emissive, layout);
+    const paint = emissive.calls.filter(([method]) => ['fill', 'stroke', 'fillRect'].includes(method));
+    expect(paint[0].at(-1)).toMatchObject({ fill: '#000000', alpha: 1 });
+    expect(paint.length).toBeGreaterThan(10);
+    for (const call of paint.slice(1)) {
+      const color = call.at(-1)[call[0] === 'stroke' ? 'stroke' : 'fill'];
+      if (Array.isArray(color)) {
+        for (const [, stop] of color) expect(stop).toMatch(/^rgba\(0, 200, 180,/);
+      } else expect(color).toBe('#00c8b4');
+    }
+  });
+
+  it('draws all eight gold letters after restoring the decoration clip', () => {
+    const { map, emissive, layout } = fixture(512);
+    drawNocturne(map, emissive, layout);
+    const letters = map.calls.filter(([method, , , , style]) => method === 'fillText' && style.fill === '#f2c94c');
+    expect(letters.map((call) => call[1]).join('')).toBe('NOCTURNE');
+    expect(letters.every((call) => call.at(-1).clipDepth === 0)).toBe(true);
+    const lastClip = map.calls.findLastIndex(([method]) => method === 'clip');
+    const firstLetter = map.calls.findIndex(([method]) => method === 'fillText');
+    expect(map.calls.slice(lastClip, firstLetter).some(([method]) => method === 'restore')).toBe(true);
+  });
+
+  it('aligns every emissive star with a base-map star', () => {
+    const { map, emissive, layout } = fixture(512);
+    drawNocturne(map, emissive, layout);
+    const stars = (context) => context.calls.filter(([method]) => method === 'arc');
+    for (const star of stars(emissive)) expect(stars(map)).toContainEqual(star);
+  });
+
+  it('engraves one world-round ring pair per bumper at 1.35r and 1.65r', () => {
+    const { map, emissive, layout } = fixture(1024);
+    drawNocturne(map, emissive, layout);
+    for (const bumper of layout.bumpers) {
+      const { u, v } = layout.toCanvas(bumper.x, bumper.y);
+      const rings = map.calls.filter(([method, x, y]) => method === 'ellipse' && x === u && y === v);
+      expect(rings).toHaveLength(3);
+      [1.35, 1.65].forEach((factor, index) => {
+        expect(rings[index][3]).toBeCloseTo(bumper.radius * factor * layout.pxPerUnit.x);
+        expect(rings[index][4]).toBeCloseTo(bumper.radius * factor * layout.pxPerUnit.y);
+      });
+    }
+  });
+
+  it('produces identical drawing calls and grain on repeated runs', () => {
+    const first = fixture(512);
+    const second = fixture(512);
+    drawNocturne(first.map, first.emissive, first.layout);
+    drawNocturne(second.map, second.emissive, second.layout);
+    expect(first.map.calls).toEqual(second.map.calls);
+    expect(first.emissive.calls).toEqual(second.emissive.calls);
+  });
+
+  it('works when pixel readback is unavailable', () => {
+    const { map, emissive, layout } = fixture(512);
+    delete map.getImageData;
+    delete map.putImageData;
+    expect(() => drawNocturne(map, emissive, layout)).not.toThrow();
+  });
+
+  it('adds only monochrome grain within two levels and preserves opacity', () => {
+    const { map, emissive, layout } = fixture(512);
+    drawNocturne(map, emissive, layout);
+    const deltas = new Set();
+    for (let index = 0; index < map.pixels.length; index += 4) {
+      const delta = map.pixels[index] - 20;
+      deltas.add(delta);
+      if (map.pixels[index + 1] - 30 !== delta || map.pixels[index + 2] - 40 !== delta || map.pixels[index + 3] !== 255) {
+        throw new Error('Grain changed hue or opacity');
+      }
+    }
+    expect([...deltas].sort()).toEqual([-1, -2, 0, 1, 2]);
+  });
+
+  it('clips only small pin clearances, never the lettering or mouth', () => {
+    const { map, emissive, layout } = fixture(512);
+    drawNocturne(map, emissive, layout);
+    expect(map.calls.filter(([method, rule]) => method === 'clip' && rule === 'evenodd')).toHaveLength(layout.pins.length);
+    for (const pin of layout.pins) {
+      const { u, v } = layout.toCanvas(pin.x, pin.y);
+      expect(map.calls).toContainEqual(['ellipse', u, v, 2 * layout.pinRadius * layout.pxPerUnit.x, 2 * layout.pinRadius * layout.pxPerUnit.y, 0, 0, Math.PI * 2]);
+    }
+  });
+});
+
+describe('drawBumperCap', () => {
+  it.each([1024, 512, 256])('draws deterministic glass and an eight-point compass at %i', (size) => {
+    const first = recordingContext(size);
+    const second = recordingContext(size);
+    expect(() => drawBumperCap(first, size, PALETTE)).not.toThrow();
+    drawBumperCap(second, size, PALETTE);
+    expect(first.calls).toEqual(second.calls);
+    expect(first.calls.some(([method]) => method === 'clearRect')).toBe(true);
+    expect(first.calls.some(([method]) => method === 'clip')).toBe(true);
+    expect(first.calls.some(([method]) => method === 'createRadialGradient')).toBe(true);
+    expect(first.calls.filter(([method]) => method === 'lineTo')).toHaveLength(15);
+    expect(first.calls.some((call) => call[0] === 'stroke' && call.at(-1).stroke === '#00c8b4')).toBe(true);
+  });
+});
