@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import {
-  boardPins, boardReclineFor, closedFor, dropXAt, refillPose, FLAT_CAMERA, FOLD_CAMERA, foldFor, fovForAspect, PIN_BOARD, pathAt,
+  boardPins, boardReclineFor, closedFor, dropXAt, stoodFor, refillPose, FLAT_CAMERA, FOLD_CAMERA, foldFor, fovForAspect, PIN_BOARD, pathAt,
 } from '../src/game/CoinPusher.js';
 import { GAME } from '../src/game/config.js';
 
@@ -294,5 +294,16 @@ describe('pathCursor', () => {
       cursor = pathCursor(path, t, cursor);
       expect(pathAt(path, t, cursor)).toEqual(pathAt(path, t));
     }
+  });
+});
+
+describe('stood-up layout', () => {
+  it('moves the HUD off past 130 degrees and back past 140, holding between', () => {
+    expect(stoodFor(false, 180)).toBe(false);
+    expect(stoodFor(false, 90)).toBe(true);
+    expect(stoodFor(false, 135)).toBe(false);
+    expect(stoodFor(true, 135)).toBe(true);
+    expect(stoodFor(true, 150)).toBe(false);
+    expect(stoodFor(true, Number.NaN)).toBe(false);
   });
 });

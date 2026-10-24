@@ -197,6 +197,18 @@ export function closedFor(wasClosed, hingeDegrees) {
 }
 
 /**
+ * Whether the HUD should step off the upright half: once the display stands past 130 degrees,
+ * and back at 140, with the same dead band as closedFor so a hinge near the line does not
+ * flicker the layout. A missing reading counts as flat.
+ */
+export function stoodFor(wasStood, hingeDegrees) {
+  if (!Number.isFinite(hingeDegrees)) return false;
+  if (hingeDegrees < 130) return true;
+  if (hingeDegrees > 140) return false;
+  return Boolean(wasStood);
+}
+
+/**
  * How stood up the display is, 0 lying flat to 1 at a right angle or tighter, from the hinge angle
  * in degrees. Smoothstepped, so the camera eases into both ends instead of arriving at them at full
  * speed - a straight ramp reads as a hard stop when the hinge reaches 90.
