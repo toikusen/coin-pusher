@@ -24,6 +24,14 @@ export const GEOMETRY_CONTROLS = Object.freeze([
   { id: 'geoLowerLength', key: 'lowerLength' },
 ]);
 
+// Reset throws the round away, so it takes two taps: the first only arms it, for this long.
+export const RESET_CONFIRM_MS = 3000;
+
+/** Whether a reset tap at `now` goes through, given when the button was last armed. */
+export function resetConfirmed(armedAt, now) {
+  return now - armedAt <= RESET_CONFIRM_MS;
+}
+
 export function collectUI() {
   const ids = [
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
@@ -152,6 +160,12 @@ export class GameUI {
     void this.el.reward.offsetWidth;
     this.el.reward.classList.add('is-visible');
     this.rewardTimer = window.setTimeout(() => this.el.reward.classList.remove('is-visible'), 1200);
+  }
+
+  armReset(armed) {
+    this.el.resetButton.classList.toggle('is-armed', armed);
+    this.el.resetButton.setAttribute('aria-label', armed ? '再按一次重新開始' : '重新開始');
+    if (armed) this.announce('再按一次重新開始');
   }
 
   announce(message) {

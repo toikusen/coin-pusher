@@ -576,6 +576,23 @@ html[data-stood] .mission__label { grid-area: label; }
 html[data-stood] .mission__best { grid-area: best; }
 html[data-stood] .mission__value { grid-area: value; }
 html[data-stood] .mission__track { grid-area: track; }
+/* Armed reset: the ring turns warning red and says what the next tap does. */
+.hud-button.is-armed { border-color: var(--danger-400); color: var(--danger-400); }
+.hud-button.is-armed::after {
+  content: "再按一次";
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  right: 0;
+  padding: 0.25rem 0.5rem;
+  border: 0.0625rem solid var(--danger-400);
+  background: var(--ink-900);
+  color: var(--text-strong);
+  font: 600 0.6875rem/1.2 var(--font-body);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+html[data-stood] .hud-button.is-armed::after { top: auto; bottom: calc(100% + 0.375rem); }
 html[data-stood] .hud__actions { grid-column: 1; grid-row: 2; justify-self: end; align-self: center; z-index: 1; margin-right: max(1rem, env(safe-area-inset-right)); }
 
 /* --- review pass: finer, quieter chrome next to the board ------------------------------------ */

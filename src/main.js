@@ -13,7 +13,7 @@ import { calculateReward, chestsDue } from './game/rules.js';
 import { GameAudio } from './audio.js';
 import { watchHinge } from './hinge.js';
 import { loadProgress, saveProgress } from './storage.js';
-import { collectUI, GameUI, GEOMETRY_CONTROLS, TUNING_CONTROLS } from './ui.js';
+import { collectUI, GameUI, GEOMETRY_CONTROLS, RESET_CONFIRM_MS, resetConfirmed, TUNING_CONTROLS } from './ui.js';
 
 const elements = collectUI();
 const ui = new GameUI(elements);
@@ -292,6 +292,26 @@ function flushPayout() {
   renderState();
 }
 
+// The first tap arms reset and the second, inside RESET_CONFIRM_MS, goes through.
+let resetArmedAt = -Infinity;
+let resetDisarm = 0;
+function disarmReset() {
+  window.clearTimeout(resetDisarm);
+  resetArmedAt = -Infinity;
+  ui.armReset(false);
+}
+function tapReset() {
+  const now = performance.now();
+  if (resetConfirmed(resetArmedAt, now)) {
+    disarmReset();
+    resetSession();
+    return;
+  }
+  resetArmedAt = now;
+  ui.armReset(true);
+  resetDisarm = window.setTimeout(disarmReset, RESET_CONFIRM_MS);
+}
+
 function resetSession() {
   stopAuto();
   // A payout still in the batch window belongs to the session being thrown away.
@@ -413,7 +433,7 @@ function bindUI() {
   });
   elements.helpButton.addEventListener('click', showOnboarding);
   elements.startButton.addEventListener('click', closeOnboarding);
-  elements.resetButton.addEventListener('click', resetSession);
+  elements.resetButton.addEventListener('click', tapReset);
   elements.retryButton.addEventListener('click', () => window.location.reload());
   elements.tuneToggle.addEventListener('click', () => {
     ui.setTunePanel(elements.tunePanel.hidden);
