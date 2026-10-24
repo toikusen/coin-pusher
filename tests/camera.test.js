@@ -162,7 +162,7 @@ describe('hinge blend', () => {
     const lerp = (from, to, t) => from.map((value, index) => value + (to[index] - value) * t);
     const cases = [];
     for (let degrees = 180; degrees >= 90; degrees -= 5) {
-      for (const stood of [false, true]) if (stoodFor(stood, degrees) === stood) cases.push([degrees, stood ? STOOD_VIEW : FLAT_VIEW]);
+      for (const stood of [false, true]) if (stoodFor(stood, foldFor(degrees)) === stood) cases.push([degrees, stood ? STOOD_VIEW : FLAT_VIEW]);
     }
     for (const [degrees, view] of cases) {
       const { aspect } = view;
@@ -307,12 +307,12 @@ describe('pathCursor', () => {
 });
 
 describe('stood-up layout', () => {
-  it('moves the HUD off past 130 degrees and back past 140, holding between', () => {
-    expect(stoodFor(false, 180)).toBe(false);
-    expect(stoodFor(false, 90)).toBe(true);
-    expect(stoodFor(false, 135)).toBe(false);
-    expect(stoodFor(true, 135)).toBe(true);
-    expect(stoodFor(true, 150)).toBe(false);
+  it('moves the HUD off past a 130 degree fold and back under 140, holding between', () => {
+    expect(stoodFor(false, foldFor(180))).toBe(false);
+    expect(stoodFor(false, foldFor(90))).toBe(true);
+    expect(stoodFor(false, foldFor(135))).toBe(false);
+    expect(stoodFor(true, foldFor(135))).toBe(true);
+    expect(stoodFor(true, foldFor(150))).toBe(false);
     expect(stoodFor(true, Number.NaN)).toBe(false);
   });
 });

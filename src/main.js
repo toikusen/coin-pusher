@@ -1,6 +1,6 @@
 import './styles.css';
 import { Capacitor } from '@capacitor/core';
-import { CoinPusher, stoodFor } from './game/CoinPusher.js';
+import { CoinPusher } from './game/CoinPusher.js';
 import {
   GAME,
   MACHINE_GEOMETRY_DEFAULTS,
@@ -22,13 +22,6 @@ const quality = getQualityProfile();
 // ?hinge=<degrees> stands in for it: 180 lies the machine flat, 90 stands it up.
 const hingeParam = new URLSearchParams(location.search).get('hinge');
 if (hingeParam !== null || Capacitor.isNativePlatform()) document.documentElement.dataset.fold = '';
-// Stood up, the HUD moves off the upright half (styles.css html[data-stood]).
-let stood = false;
-function applyHinge(degrees) {
-  stood = stoodFor(stood, degrees);
-  document.documentElement.toggleAttribute('data-stood', stood);
-  game?.setHingeAngle(degrees);
-}
 const progress = loadProgress();
 progress.hdriHorizontal = Number.isFinite(progress.hdriHorizontal)
   ? Math.min(180, Math.max(-180, progress.hdriHorizontal))
@@ -309,6 +302,8 @@ function tapReset() {
   }
   resetArmedAt = now;
   ui.armReset(true);
+  // A late disarm from the last arming must not cut this one short.
+  window.clearTimeout(resetDisarm);
   resetDisarm = window.setTimeout(disarmReset, RESET_CONFIRM_MS);
 }
 
@@ -480,10 +475,12 @@ async function boot() {
       onScore: handleScore,
       onBoardHit: (kind, strength) => audio.boardHit(kind, strength),
       onError: (message) => ui.error(message),
+      // Stood up, the HUD moves off the upright half (styles.css html[data-stood]).
+      onStood: (stood) => document.documentElement.toggleAttribute('data-stood', stood),
     }).init();
-    if (hingeParam !== null) applyHinge(Number(hingeParam));
+    if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));
     // A null angle (no hinge, or status unknown) reads as flat.
-    watchHinge(({ angle }) => applyHinge(angle ?? 180));
+    watchHinge(({ angle }) => game?.setHingeAngle(angle ?? 180));
     // Dev-only handle so motion can be measured from the console. Stripped from the build.
     if (import.meta.env.DEV) window.__game = game;
     // Dev builds only: frame rate, physics time (mean / worst over half a second) and coins in play,

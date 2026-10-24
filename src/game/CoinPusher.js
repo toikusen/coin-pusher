@@ -200,14 +200,16 @@ export function closedFor(wasClosed, hingeDegrees) {
 }
 
 /**
- * Whether the HUD should step off the upright half: once the display stands past 130 degrees,
- * and back at 140, with the same dead band as closedFor so a hinge near the line does not
- * flicker the layout. A missing reading counts as flat.
+ * Whether the HUD should step off the upright half, from the eased fold rather than the hinge, so
+ * the layout and the camera always agree: a hinge snapped flat would otherwise put the HUD back
+ * over a camera still in the stood-up pose, and that pose cuts the slot's crown off the shorter
+ * canvas. On past the fold of a 130 degree hinge, off under that of 140, holding between so a
+ * fold resting near the line does not flicker the layout.
  */
-export function stoodFor(wasStood, hingeDegrees) {
-  if (!Number.isFinite(hingeDegrees)) return false;
-  if (hingeDegrees < 130) return true;
-  if (hingeDegrees > 140) return false;
+export function stoodFor(wasStood, fold) {
+  if (!Number.isFinite(fold)) return false;
+  if (fold > foldFor(130)) return true;
+  if (fold < foldFor(140)) return false;
   return Boolean(wasStood);
 }
 
@@ -392,6 +394,7 @@ export class CoinPusher {
     // foldTarget so a coarse hinge reading glides rather than jumps.
     this.fold = 0;
     this.foldTarget = 0;
+    this.stood = false;
     // Mechanical surfaces re-skinned when a cabinet shell loads: the tray, its inlay, the blade,
     // the scraper and the rear deck. Their own materials are tuned for the procedural machine -
     // the scraper's gold emissive in particular only reads as a lit guard against procedural
@@ -3057,6 +3060,9 @@ export class CoinPusher {
       // About a fifth of a second to settle; snaps the last sliver so it stops re-posing.
       this.fold = THREE.MathUtils.damp(this.fold, this.foldTarget, 12, frameDelta);
       if (Math.abs(this.fold - this.foldTarget) < 0.001) this.fold = this.foldTarget;
+      const stood = stoodFor(this.stood, this.fold);
+      // The layout change resizes the canvas, and resize re-poses the camera for it.
+      if (stood !== this.stood) this.callbacks.onStood?.((this.stood = stood));
       this.poseCamera();
     }
     // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).
