@@ -474,6 +474,7 @@ async function boot() {
     game = await new CoinPusher(elements.gameCanvas, quality, {
       onScore: handleScore,
       onBoardHit: (kind, strength) => audio.boardHit(kind, strength),
+      onStandUp: () => audio.powerOn(),
       onError: (message) => ui.error(message),
     }).init();
     if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));

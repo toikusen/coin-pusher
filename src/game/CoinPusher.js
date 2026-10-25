@@ -239,6 +239,27 @@ export function fenceLampLit(time) {
   return (Math.floor(time / FENCE_LAMP_STEP) % FENCE_LAMP_BAYS) + 1;
 }
 
+// Opening a foldable stands the machine up, and it powers on: the lamps race front to back twice,
+// a bay every POWER_ON_STEP, then fall back to the marquee beat.
+const POWER_ON_STEP = 0.07;
+const POWER_ON_LAPS = 2;
+
+/** The bay racing during power-on, `since` seconds after it began, or 0 once it is over. */
+export function powerOnLampLit(since) {
+  const step = Math.floor(since / POWER_ON_STEP);
+  if (!(since >= 0) || step >= FENCE_LAMP_BAYS * POWER_ON_LAPS) return 0;
+  return (step % FENCE_LAMP_BAYS) + 1;
+}
+
+/**
+ * Whether this fold powers the machine on: once, as it opens past the fold of a 165 degree hinge,
+ * and armed again only back past 172, so a hinge resting near the line does not replay it.
+ */
+export function standUpFor(armed, fold) {
+  if (armed && fold > foldFor(165)) return { fire: true, armed: false };
+  return { fire: false, armed: armed || fold < foldFor(172) };
+}
+
 // The reel drums' faces, in order round each drum, and the angle between neighbours. The idle '?'
 // rides the drum too, so a machine that has not paid shows it rather than a blank.
 const DRUM_FACES = ['7', 'bag', 'quake', 'gild', '?'];
@@ -388,6 +409,8 @@ export class CoinPusher {
     this.foldTarget = 0;
     // Set by the first hinge reading - see setHingeAngle.
     this.foldable = false;
+    this.standUpArmed = true;
+    this.powerOnAt = -Infinity;
     // Mechanical surfaces re-skinned when a cabinet shell loads: the tray, its inlay, the blade,
     // the scraper and the rear deck. Their own materials are tuned for the procedural machine -
     // the scraper's gold emissive in particular only reads as a lit guard against procedural
@@ -2627,9 +2650,12 @@ export class CoinPusher {
       this.reelBezel.emissiveIntensity = 0.9 - 0.3 * Math.cos((this.elapsed * Math.PI * 2) / 0.8);
     }
     if (!this.fenceLamps?.length) return;
-    const lit = this.quality.reducedMotion ? 0 : fenceLampLit(this.elapsed);
+    const racing = this.quality.reducedMotion ? 0 : powerOnLampLit(this.elapsed - this.powerOnAt);
+    const lit = this.quality.reducedMotion ? 0 : racing || fenceLampLit(this.elapsed);
     for (const { material, bay } of this.fenceLamps) {
-      material.emissiveIntensity = this.quality.reducedMotion ? 0.3 : bay === lit ? 0.6 : FENCE_LAMP_IDLE;
+      if (this.quality.reducedMotion) material.emissiveIntensity = 0.3;
+      else if (bay === lit) material.emissiveIntensity = racing ? 1.4 : 0.6;
+      else material.emissiveIntensity = FENCE_LAMP_IDLE;
     }
   }
 
@@ -3068,6 +3094,12 @@ export class CoinPusher {
       // About a fifth of a second to settle; snaps the last sliver so it stops re-posing.
       this.fold = THREE.MathUtils.damp(this.fold, this.foldTarget, 12, frameDelta);
       if (Math.abs(this.fold - this.foldTarget) < 0.001) this.fold = this.foldTarget;
+      const standUp = standUpFor(this.standUpArmed, this.fold);
+      this.standUpArmed = standUp.armed;
+      if (standUp.fire) {
+        this.powerOnAt = this.elapsed;
+        this.callbacks.onStandUp?.();
+      }
       this.poseCamera();
     }
     // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).

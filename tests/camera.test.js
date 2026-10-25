@@ -308,3 +308,23 @@ describe('pathCursor', () => {
   });
 });
 
+
+describe('power-on', () => {
+  it('fires once opening past 165 degrees and re-arms only back past 172', async () => {
+    const { standUpFor } = await import('../src/game/CoinPusher.js');
+    expect(standUpFor(true, foldFor(175))).toEqual({ fire: false, armed: true });
+    expect(standUpFor(true, foldFor(150))).toEqual({ fire: true, armed: false });
+    expect(standUpFor(false, foldFor(150))).toEqual({ fire: false, armed: false });
+    expect(standUpFor(false, foldFor(168))).toEqual({ fire: false, armed: false });
+    expect(standUpFor(false, foldFor(176))).toEqual({ fire: false, armed: true });
+  });
+
+  it('races the lamps front to back twice, then stops', async () => {
+    const { powerOnLampLit } = await import('../src/game/CoinPusher.js');
+    const bays = Array.from({ length: 12 }, (_, step) => powerOnLampLit(step * 0.07 + 0.01));
+    expect(bays).toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
+    expect(powerOnLampLit(12 * 0.07 + 0.01)).toBe(0);
+    expect(powerOnLampLit(-1)).toBe(0);
+    expect(powerOnLampLit(Number.NEGATIVE_INFINITY)).toBe(0);
+  });
+});

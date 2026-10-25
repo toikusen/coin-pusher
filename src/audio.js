@@ -50,4 +50,9 @@ export class GameAudio {
     [523, 659, 784, 1046].forEach((frequency, index) => this.tone(frequency, 0.22, 'triangle', 0.03, index * 0.07));
   }
   error() { this.tone(150, 0.18, 'square', 0.018); }
+  // The machine standing up: a latch clunk, then a rising power-on run under the racing lamps.
+  powerOn() {
+    this.tone(90, 0.09, 'square', 0.03);
+    [392, 523, 659, 784].forEach((frequency, index) => this.tone(frequency, 0.16, 'triangle', 0.022, 0.12 + index * 0.08));
+  }
 }
