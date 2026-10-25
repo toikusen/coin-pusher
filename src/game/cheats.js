@@ -5,6 +5,8 @@
 //   ?slot=bag    every spin locks on three money bags
 //   ?slot=miss   every spin misses outright, no two faces alike
 //   ?chest=3     drop three chests as soon as the machine is ready
+//   ?bench=1     skip the intro and start auto-drop, for unattended timing runs (a simulator
+//                or a phone nobody is holding)
 //
 //   cheats.slot = 'bag'   from the console, takes effect on the next spin
 //   cheats.drop(1)        drop a chest now - it still has to ride the machine
@@ -21,6 +23,8 @@ export const CHEATS = {
   slot: params.get('slot'),
   // How many chests to drop on boot.
   chest: Number(params.get('chest')) || 0,
+  // Skip the intro and run auto-drop on load.
+  bench: params.has('bench'),
   // Wired up in main.js, where the game instance and the prize handlers live.
   drop: () => {},
   spin: () => {},

@@ -552,7 +552,10 @@ async function boot() {
     state.ready = true;
     ui.ready();
     renderState();
-    if (progress.hasSeenOnboarding) {
+    if (CHEATS.bench) {
+      game.start();
+      toggleAuto();
+    } else if (progress.hasSeenOnboarding) {
       game.start();
       elements.gameCanvas.focus();
     } else {
