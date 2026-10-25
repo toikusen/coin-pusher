@@ -1,5 +1,6 @@
 {
   "appId": "dev.coinpusher.app",
   "appName": "Coin Pusher",
-  "webDir": "dist"
+  "webDir": "dist",
+  "backgroundColor": "#030710"
 }
