@@ -26,8 +26,10 @@ const mirror = (name, spec) => ({
   [`${name}_R`]: spec,
 });
 
-// Seven newels define six bays, numbered from the player towards the back shell.
-const FENCE_NEWELS = Array.from({ length: 7 }, (_, j) => -4.38 + 1.575 * j);
+// Seven newels define six bays, numbered from the player back to the pin board's sill, where the
+// fence ends (tools/build_cabinet.py FENCE_END).
+const FENCE_END = 2.42;
+const FENCE_NEWELS = Array.from({ length: 7 }, (_, j) => -4.38 + ((FENCE_END + 4.38) / 6) * j);
 const FENCE_BAYS = FENCE_NEWELS.slice(0, -1).map((c, j) => (c + FENCE_NEWELS[j + 1]) / 2);
 
 const PARTS = {
@@ -35,8 +37,8 @@ const PARTS = {
   ...Object.assign({}, ...FENCE_NEWELS.map((c, j) => mirror(
     `fence_newel_${j}`, box([4.54, 4.78], [1.58, 2.46], [c - 0.12, c + 0.12]),
   ))),
-  ...mirror('fence_handrail', box([4.56, 4.78], [2.25, 2.375], [-4.50, 5.19])),
-  ...mirror('fence_lower_rail', box([4.50, 4.76], [1.72, 1.80], [-4.38, 5.07])),
+  ...mirror('fence_handrail', box([4.56, 4.78], [2.25, 2.375], [-4.50, FENCE_END + 0.12])),
+  ...mirror('fence_lower_rail', box([4.50, 4.76], [1.72, 1.80], [-4.38, FENCE_END])),
   ...Object.assign({}, ...FENCE_BAYS.map((c, j) => mirror(
     `fence_baluster_${j + 1}`, box([4.50, 4.64], [1.80, 2.25], [c - 0.035, c + 0.035]),
   ))),

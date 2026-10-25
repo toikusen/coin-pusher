@@ -31,7 +31,12 @@ from blender_lib import (  # noqa: E402  - needs the path above
 
 OUT = ROOT / "public" / "models" / "cabinet.glb"
 
-FENCE_NEWELS = tuple(-4.38 + 1.575 * j for j in range(7))
+# The fence stops at the pin board's sill (dropZoneZ - 0.1 at the default bed, z_local 2.42) with a
+# newel, rather than running on to the back shell: on a foldable the sill sits on the crease, and a
+# rail carried past it was drawn up the standing half, so the crease bent it. Six bays still, for
+# the lamp chase (CoinPusher.js FENCE_LAMP_BAYS).
+FENCE_END = 2.42
+FENCE_NEWELS = tuple(-4.38 + (FENCE_END + 4.38) / 6 * j for j in range(7))
 FENCE_BAYS = tuple((a + b) / 2 for a, b in zip(FENCE_NEWELS, FENCE_NEWELS[1:]))
 
 
@@ -77,14 +82,14 @@ def build():
     for side in (1, -1):
         joined(f"fence_handrail_{'R' if side > 0 else 'L'}", [
             box("handrail", shell_dark, mirror_x((4.60, 4.78), side),
-                (2.25, 2.35), (-4.50, 5.19), bevel=0.015),
+                (2.25, 2.35), (-4.50, FENCE_END + 0.12), bevel=0.015),
             box("inboard_lip", rail_brass, mirror_x((4.56, 4.60), side),
-                (2.29, 2.35), (-4.50, 5.19), bevel=0.015),
+                (2.29, 2.35), (-4.50, FENCE_END + 0.12), bevel=0.015),
             box("top_bead", rail_brass, mirror_x((4.60, 4.64), side),
-                (2.35, 2.375), (-4.50, 5.19), bevel=0.008),
+                (2.35, 2.375), (-4.50, FENCE_END + 0.12), bevel=0.008),
         ])
     mirrored("fence_lower_rail", shell_dark, (4.50, 4.76), (1.72, 1.80),
-             (-4.38, 5.07), bevel=0.015)
+             (-4.38, FENCE_END), bevel=0.015)
     for bay, centre in enumerate(FENCE_BAYS, start=1):
         for side in (1, -1):
             joined(f"fence_baluster_{bay}_{'R' if side > 0 else 'L'}", [

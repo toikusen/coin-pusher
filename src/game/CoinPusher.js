@@ -1911,6 +1911,8 @@ export class CoinPusher {
     hall.position.set(0, HALL_EYE_Y + height * (0.5 - HALL_HORIZON), HALL_Z);
     hall.rotation.y = Math.PI;
     this.scene.add(hall);
+    // Reclined with the board in poseCamera.
+    this.hall = hall;
   }
 
   // Headboard: glowing arch frame, dark inner panel, hexagon CP badge, gold sill.
@@ -2945,7 +2947,12 @@ export class CoinPusher {
     this.camera.lookAt(...lerp(open.target, FOLD_CAMERA.target));
     // The board lies parallel to the screen at whatever pitch the camera now has - see boardReclineFor.
     this.camera.updateMatrixWorld();
-    this.boardRig.rotation.x = boardReclineFor(this.camera.getWorldDirection(new THREE.Vector3()));
+    const recline = boardReclineFor(this.camera.getWorldDirection(new THREE.Vector3()));
+    this.boardRig.rotation.x = recline;
+    // The hall leans back with it, about its middle. Upright, its columns converged under a camera
+    // looking down while the board beside them stayed square, so the board read as a sticker on a
+    // tilted room; parallel to the screen too, every vertical on the upper half stays vertical.
+    if (this.hall) this.hall.rotation.x = recline;
     this.camera.fov = THREE.MathUtils.lerp(open.fov, FOLD_CAMERA.fov, fold);
     // The poses only put the sill near the fold: where the fold lands in the canvas moves with the
     // controls and the window, and a fixed target was 2.3 pt off on the device. So measure both -
