@@ -3,6 +3,14 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 const Hinge = registerPlugin('Hinge');
 
 /**
+ * Whether a hinge reading comes from a real hinge. A phone without one reports 'unknown' (as does a
+ * foldable before UIHingeInteraction's first update), and must keep the plain phone layout.
+ */
+export function hasHinge({ status }) {
+  return status !== 'unknown';
+}
+
+/**
  * Subscribe to the current iPhone hinge state and later changes.
  * @param {(state: { angle: number | null, status: 'closed' | 'partiallyOpen' | 'fullyOpen' | 'unknown' }) => void} onChange
  * @returns {() => void} Stops callbacks and removes the native listener.

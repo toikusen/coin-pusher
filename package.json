@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ios": "vite build && cap sync ios && cap run ios",
+    "ios:dev": "vite --port 5288 --strictPort --host & cap run ios --live-reload --host localhost --port 5288"
   },
   "dependencies": {
     "@capacitor/core": "8.5.3",

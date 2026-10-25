@@ -1,5 +1,4 @@
 import './styles.css';
-import { Capacitor } from '@capacitor/core';
 import { CoinPusher } from './game/CoinPusher.js';
 import {
   GAME,
@@ -11,7 +10,7 @@ import { TUNING_DEFAULTS } from './game/physics.js';
 import { CHEATS } from './game/cheats.js';
 import { calculateReward, chestsDue } from './game/rules.js';
 import { GameAudio } from './audio.js';
-import { watchHinge } from './hinge.js';
+import { hasHinge, watchHinge } from './hinge.js';
 import { loadProgress, saveProgress } from './storage.js';
 import { collectUI, GameUI, GEOMETRY_CONTROLS, RESET_CONFIRM_MS, resetConfirmed, TUNING_CONTROLS } from './ui.js';
 
@@ -19,9 +18,13 @@ const elements = collectUI();
 const ui = new GameUI(elements);
 const quality = getQualityProfile();
 // The app shell reports the hinge (src/hinge.js). In a browser there is none to read, so
-// ?hinge=<degrees> stands in for it: 180 lies the machine flat, 90 stands it up.
+// ?hinge=<degrees> stands in for it: 180 lies the machine flat, 90 stands it up. The foldable
+// layout (html[data-fold]) waits for a real reading, so a phone without a hinge keeps its own.
 const hingeParam = new URLSearchParams(location.search).get('hinge');
-if (hingeParam !== null || Capacitor.isNativePlatform()) document.documentElement.dataset.fold = '';
+const useFoldLayout = () => { document.documentElement.dataset.fold = ''; };
+if (hingeParam !== null) useFoldLayout();
+// The tuning panel is a developer tool; release builds leave it out.
+if (!import.meta.env.DEV) document.querySelector('.tune-dock').style.display = 'none';
 const progress = loadProgress();
 progress.hdriHorizontal = Number.isFinite(progress.hdriHorizontal)
   ? Math.min(180, Math.max(-180, progress.hdriHorizontal))
@@ -478,8 +481,12 @@ async function boot() {
       onError: (message) => ui.error(message),
     }).init();
     if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));
-    // A null angle (no hinge, or status unknown) reads as flat.
-    watchHinge(({ angle }) => game?.setHingeAngle(angle ?? 180));
+    watchHinge((state) => {
+      if (!hasHinge(state)) return;
+      useFoldLayout();
+      // A hinge with no angle yet reads as flat.
+      game?.setHingeAngle(state.angle ?? 180);
+    });
     // Dev-only handle so motion can be measured from the console. Stripped from the build.
     if (import.meta.env.DEV) window.__game = game;
     // Dev builds only: frame rate, physics time (mean / worst over half a second) and coins in play,

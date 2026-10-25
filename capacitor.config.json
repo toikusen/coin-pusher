@@ -1,9 +1,5 @@
 {
   "appId": "dev.coinpusher.app",
   "appName": "Coin Pusher",
-  "webDir": "dist",
-  "server": {
-    "url": "http://localhost:5288",
-    "cleartext": true
-  }
+  "webDir": "dist"
 }

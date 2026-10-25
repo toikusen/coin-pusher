@@ -7,7 +7,7 @@ vi.mock('@capacitor/core', () => ({
   registerPlugin: () => ({ getState: native.getState, addListener: native.addListener }),
 }));
 
-import { watchHinge } from '../src/hinge.js';
+import { hasHinge, watchHinge } from '../src/hinge.js';
 
 describe('watchHinge', () => {
   beforeEach(() => {
@@ -49,5 +49,14 @@ describe('watchHinge', () => {
 
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(remove).toHaveBeenCalledOnce();
+  });
+});
+
+describe('hasHinge', () => {
+  it('takes a phone that reports no hinge for a plain phone', () => {
+    expect(hasHinge({ angle: null, status: 'unknown' })).toBe(false);
+    expect(hasHinge({ angle: null, status: 'fullyOpen' })).toBe(true);
+    expect(hasHinge({ angle: 120, status: 'partiallyOpen' })).toBe(true);
+    expect(hasHinge({ angle: 30, status: 'closed' })).toBe(true);
   });
 });
