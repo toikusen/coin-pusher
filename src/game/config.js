@@ -342,6 +342,11 @@ export const GAME = {
   // Every threshold gets its own chest and several share the machine, so the drop X is random
   // rather than fixed - two chests spawned inside each other shove one another out of the tray.
   chestScoreStep: 50,
+  // At most this many chests ride the machine at once; any more wait their turn and drop as one
+  // pays (CoinPusher.retireChest), so nothing earned is lost. In a 10 min simulator run chests came
+  // every ~50 s and took longer than that to ride the machine - five ended up on it at once, a
+  // pile of boxes rather than a prize, and every one a heavy body in the pusher's force chain.
+  chestsOnMachine: 2,
   // 0.8 of chestScoreStep, and read against what the other two prizes are actually worth: a coin
   // averages 1.32 points (premiumChance 0.16 at premiumValue 3), so the money bag's 40 coins come
   // to about 55 once they are all pushed off, and a measured quake shook 14 coins over the lip for

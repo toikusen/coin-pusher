@@ -1506,6 +1506,7 @@ export class CoinPusher {
   buildBonusStage() {
     this.chests = [];
     this.pendingChests = [];
+    this.waitingChests = [];
     this.chestPool = [];
     // Chests waiting for the reels. One chest, one spin - see spinSlot.
     this.slotQueue = [];
@@ -1707,6 +1708,11 @@ export class CoinPusher {
       this.pendingChests.push(onWin);
       return true;
     }
+    // A full machine queues the chest; retireChest drops it when one leaves.
+    if (this.chests.length >= GAME.chestsOnMachine) {
+      this.waitingChests.push(onWin);
+      return true;
+    }
     const chest = this.acquireChest();
     const { body } = chest;
     body.setEnabled(true);
@@ -1739,11 +1745,14 @@ export class CoinPusher {
     chest.drop = null;
     this.chests.splice(index, 1);
     this.chestPool.push(chest);
+    if (this.waitingChests.length > 0 && !this.settling) this.dropChest(this.waitingChests.shift());
   }
 
   cancelChest() {
-    for (let index = this.chests.length - 1; index >= 0; index -= 1) this.retireChest(index);
+    // The queues first: retiring a chest drops the next waiting one, which a cancel must not do.
     this.pendingChests = [];
+    this.waitingChests = [];
+    for (let index = this.chests.length - 1; index >= 0; index -= 1) this.retireChest(index);
     this.slotSpin = null;
     this.slotQueue = [];
     this.coinRain = null;
@@ -1760,7 +1769,9 @@ export class CoinPusher {
 
   updateCoinRain(delta) {
     const rain = this.coinRain;
-    if (!rain) return;
+    // A full machine holds the rain as it holds the coin slot (machineFullFor); the rest of the bag
+    // falls once the bed has drained, so the prize is paused, never cut short.
+    if (!rain || this.full) return;
     rain.timer -= delta;
     // Bounded by remaining, so a long frame catches up rather than dropping coins on the floor.
     while (rain.remaining > 0 && rain.timer <= 0) {

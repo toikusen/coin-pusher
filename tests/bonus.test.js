@@ -103,3 +103,71 @@ describe('slot spin feedback', () => {
     expect(events.at(-1)).not.toBe('pay:null');
   });
 });
+
+// dropChest and retireChest through the prototype, with a body that only records what it is told.
+const chestStage = () => {
+  const fakeChest = () => ({
+    body: { setEnabled() {}, setPose() {}, setAngularVelocity() {} },
+    mesh: { visible: false },
+  });
+  return {
+    chestPrototype: {},
+    settling: false,
+    chests: [],
+    chestPool: [],
+    pendingChests: [],
+    waitingChests: [],
+    chestHalfDepth: 0.4,
+    callbacks: {},
+    slotQueue: [],
+    camera: { position: { copy() {} } },
+    cameraBase: {},
+    acquireChest: fakeChest,
+    chestDropX: () => 0,
+    dropChest: CoinPusher.prototype.dropChest,
+    retireChest: CoinPusher.prototype.retireChest,
+    cancelChest: CoinPusher.prototype.cancelChest,
+  };
+};
+
+describe('chests on the machine', () => {
+  it('holds extra chests back and drops one each time a chest leaves, losing none', () => {
+    const self = chestStage();
+    const dropped = [];
+    self.callbacks.onChestDrop = () => dropped.push(self.chests.length);
+    for (let index = 0; index < 5; index += 1) self.dropChest(() => {});
+    expect(self.chests).toHaveLength(GAME.chestsOnMachine);
+    expect(self.waitingChests).toHaveLength(5 - GAME.chestsOnMachine);
+    while (self.chests.length > 0) self.retireChest(0);
+    expect(dropped).toHaveLength(5);
+    expect(self.waitingChests).toHaveLength(0);
+  });
+
+  it('clears the queue on a cancel instead of dropping it', () => {
+    const self = chestStage();
+    for (let index = 0; index < 4; index += 1) self.dropChest(() => {});
+    self.cancelChest();
+    expect(self.chests).toHaveLength(0);
+    expect(self.waitingChests).toHaveLength(0);
+  });
+});
+
+describe('coin rain on a full machine', () => {
+  it('pauses while the machine is full and finishes the bag once it drains', () => {
+    let sent = 0;
+    const self = {
+      coinRain: null,
+      full: false,
+      sendDownBoard: () => { sent += 1; },
+      rainCoins: CoinPusher.prototype.rainCoins,
+      updateCoinRain: CoinPusher.prototype.updateCoinRain,
+    };
+    self.rainCoins(10);
+    self.full = true;
+    for (let step = 0; step < 600; step += 1) self.updateCoinRain(1 / 60);
+    expect(sent).toBe(0);
+    self.full = false;
+    for (let step = 0; step < 600; step += 1) self.updateCoinRain(1 / 60);
+    expect(sent).toBe(10);
+  });
+});
