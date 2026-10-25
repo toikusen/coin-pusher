@@ -143,7 +143,11 @@ export const GAME = {
   // once full; 0.6 and below never level off - the bed passed 500 coins and the step time kept
   // climbing (0.55: 673 coins, 5.7 ms) - which on a phone is a slideshow. 0.75 levels at ~200 with
   // 4-7 hanging. Lower than 0.65 needs a way for the bed to shed coins (side gutters) first.
-  lowerBladeAmplitude: 0.65,
+  // Those were older machines. Re-measured in the browser after the thin coin, the pin board and
+  // the lower-bed grip (6 min auto-drop each): 0.65 was still climbing at 360 coins and paid back
+  // two thirds of what went in, 0.75 ~310, 0.9 levelled at ~240 and paid it all back. Back to 0.9:
+  // a machine that will not pay what it is fed reads as broken, whatever hangs at the lip.
+  lowerBladeAmplitude: 0.9,
   // 2.8 -> 3.2, paired with pusherRearExtension 1.85 -> 1.65 so the tray's rear edge does not move
   // at all: depth/2 + rearExtension is unchanged, and the whole 0.4 goes into the front lip, which
   // travels 0.2 towards the player. That is what buys dropZoneZ its room - the lip at full retreat
@@ -532,13 +536,6 @@ export function getQualityProfile() {
     shadows: !lowPower && !isIOS(),
     // LOWER_SEED_COUNT (110, about what the bed holds in play) plus 30 riding the tray.
     seedCount: 140,
-    // Ceiling on coins in play; past it CoinPusher takes buried ones out of the back of the pile.
-    // Every coin stays awake - the blade keeps the whole connected pile moving - so the step cost
-    // is linear in the count. An iPhone ran ~16x slower per step than a desktop and dropped to
-    // 20 fps at ~230 coins on the plain Rapier build; the SIMD build (world.js) roughly halves the
-    // step, so 300 should fit a frame - to be confirmed on the phone with the dev overlay.
-    // ponytail: a device guess. Upgrade path: drive it from the measured step time.
-    maxLiveCoins: lowPower || isIOS() || window.matchMedia('(pointer: coarse)').matches ? 300 : 400,
     sparkCount: reducedMotion ? 0 : lowPower ? 32 : 56,
     // Rapier's solver (world.js): its cylinders are exact and its contacts converge in a few
     // iterations - cannon-es needed 28-32 here, and 120 Hz, to keep a flat coin from shivering.

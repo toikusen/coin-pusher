@@ -12,54 +12,26 @@ export const COIN_MASS = 0.05;
 // first drop.
 export const LOWER_SEED_COUNT = 110;
 // Coin-on-coin grip once a coin is on the lower bed (CoinPusher switches it to the 'lowerCoin'
-// material). The tray keeps COIN_COIN_FRICTION: at 0.45 there it already jams, while on the bed
-// this much grip is what lets overlapping coins cantilever past the face instead of sliding off.
+// material). The tray keeps COIN_COIN_FRICTION: at 0.45 there it already jams. On the bed, grip is
+// what lets overlapping coins cantilever past the face instead of sliding off. With the lower blade
+// at 0.9, 6 min of auto-drop in the browser levelled at ~240 coins for 2, 1.2 and 0.7 alike; lower
+// grip only brought the first payout forward (0.7: ~60 s against ~90 s) and let the seeded pile
+// shed a coin while idle on some seeds, so it stays at 2.
 export const LOWER_COIN_FRICTION = 2;
 
-/**
- * Index of a lower-bed coin that can be taken out with the least to see: the one with the most
- * coins stacked over it (a bottom-layer coin under two or more is invisible), lowest first on a
- * tie, and only well back from the lip so the clump hanging there is never undermined. With
- * nothing buried at all it falls back to the lowest coin in that back zone. -1 when the zone is
- * empty. O(n^2), so only call it when over the coin ceiling (quality.maxLiveCoins).
- */
-export function buriedCoinIndex(positions, thickness = COIN_HEIGHT) {
-  const reach = COIN_RADIUS * 0.8;
-  let best = -1;
-  let bestAbove = -1;
-  for (let i = 0; i < positions.length; i += 1) {
-    const low = positions[i];
-    if (low.y < 0 || low.y > 0.5 || low.z < GAME.playfieldFrontZ + 1) continue;
-    let above = 0;
-    for (let j = 0; j < positions.length && above < 2; j += 1) {
-      const p = positions[j];
-      if (j === i || p.y <= low.y + thickness * 0.5 || p.y > 0.6) continue;
-      if (Math.hypot(p.x - low.x, p.z - low.z) < reach) above += 1;
-    }
-    if (above > bestAbove || (above === bestAbove && low.y < positions[best].y)) {
-      best = i;
-      bestAbove = above;
-    }
-  }
-  return best;
-}
+// How full the machine may get before the coin slot holds, and how far it must drain before it
+// opens again. Nothing is ever taken out of the pile to stay under it - coins that vanished from
+// the back of the bed took the pile's pushing force with them, and the bed stopped paying. 280 is
+// above the ~240 the machine settles at once it pays steadily (lower blade 0.9), so in normal play
+// it never triggers; it catches bursts like a money bag landing on a full bed.
+export const MACHINE_FULL_AT = 280;
+export const MACHINE_RESUME_AT = 260;
 
-// Bounds for the live coin ceiling. A hot phone throttles its CPU (measured: an iPhone that held
-// 60 fps at ~300 coins cool dropped to 20 fps at 140 once warm), so the ceiling follows the
-// measured physics step instead of trusting the device's cool-headed best.
-export const MIN_COIN_CEILING = 150;
-const SLOW_STEP_MS = 10;
-const FAST_STEP_MS = 6;
-
-/**
- * Next live coin ceiling from the mean physics step over the last half second: down 10 when a
- * step eats most of a frame, back up 5 when there is room again, within MIN_COIN_CEILING..max.
- * The gap between the two thresholds is the hysteresis that keeps it from hunting.
- */
-export function nextCoinCeiling(current, stepMs, max) {
-  if (stepMs > SLOW_STEP_MS) return Math.max(MIN_COIN_CEILING, current - 10);
-  if (stepMs < FAST_STEP_MS) return Math.min(max, current + 5);
-  return current;
+/** Whether the coin slot is held for a full machine, with hysteresis so it does not chatter. */
+export function machineFullFor(wasFull, liveCoins) {
+  if (liveCoins >= MACHINE_FULL_AT) return true;
+  if (liveCoins <= MACHINE_RESUME_AT) return false;
+  return Boolean(wasFull);
 }
 
 /** Whether a coin has come down off the tray onto the lower bed, where it takes LOWER_COIN_FRICTION. */

@@ -31,18 +31,18 @@ import {
   chestDropZ,
   nudgeOverLip,
   onLowerBed,
-  buriedCoinIndex,
-  nextCoinCeiling,
+  machineFullFor,
   lowerBladeZAt,
   settleChestOnLowerBed,
 } from './physics.js';
 
-// Six seconds of play before the first frame, entered at full retreat (runPusherToFullRetreat).
+// Twelve seconds of play before the first frame, entered at full retreat (runPusherToFullRetreat).
 // The three-layer seed keeps settling for a few strokes - a coin or two slides off the lip on
 // some piles - and all of that has to happen here, where settlePile discards it, rather than in
-// the player's first idle seconds. Measured over five pile seeds: idle payouts are 0 after 6 s,
-// 1-3 on some seeds after the old half-stroke. Rapier runs it in well under half a second.
-const PILE_SETTLE_SECONDS = 6;
+// the player's first idle seconds. Six was enough for the lower blade's old 0.65 stroke; at 0.9
+// seed 2024 still shed two coins in the first idle seconds after it. Rapier runs it in about a
+// second.
+const PILE_SETTLE_SECONDS = 12;
 
 // How far off centre a chest may be dropped. playfieldHalfWidth less a whole chest width leaves
 // more than the tumbling box's own half-diagonal clear of the glass at any spawn yaw.
@@ -2800,13 +2800,13 @@ export class CoinPusher {
     return true;
   }
 
-  /** Settling a new pile, or physics behind real time - auto-drop waits (main.js). */
+  /** Settling a new pile, physics behind real time, or a full machine - auto-drop waits (main.js). */
   get busy() {
-    return Boolean(this.settling || this.behind);
+    return Boolean(this.settling || this.behind || this.full);
   }
 
   drop() {
-    if (this.closed || this.settling) return false;
+    if (this.closed || this.settling || this.full) return false;
     return this.launchCoin();
   }
 
@@ -2815,22 +2815,6 @@ export class CoinPusher {
   // only ever travel down, so this is one-way until the coin is recycled.
   gripOnLowerBed(body) {
     if (body.material === 'coin' && onLowerBed(body.position)) this.world.setMaterial(body, 'lowerCoin');
-  }
-
-  // Over the live ceiling, buried coins go back to the pool - see buriedCoinIndex. Up to three a
-  // search, so a burst of drops cannot outrun it (three per 0.25 s is 12 a second, drops come ~1). The ceiling itself follows the measured step
-  // (recordPerf -> nextCoinCeiling), from quality.maxLiveCoins down as the device heats up.
-  // Searched at most every TRIM_INTERVAL of game time: the search is O(n^2) and only runs when the
-  // pile is at its heaviest, so doing it every frame added cost exactly when there was least room.
-  trimBuriedCoins() {
-    const ceiling = this.coinCeiling ?? this.quality.maxLiveCoins;
-    if (this.activeCoins.length <= ceiling || this.elapsed < (this.nextTrimAt ?? 0)) return;
-    this.nextTrimAt = this.elapsed + TRIM_INTERVAL;
-    for (let n = 0; n < 3 && this.activeCoins.length > ceiling; n += 1) {
-      const index = buriedCoinIndex(this.activeCoins.map((coin) => coin.body.position), this.tuning.thickness);
-      if (index < 0) return;
-      this.recycleCoin(index);
-    }
   }
 
   // Frame and physics timings, averaged over half a second, for the dev overlay in main.js.
@@ -2846,11 +2830,7 @@ export class CoinPusher {
     if (perf.time < 0.5) return;
     // Physics fell behind over the last half second: auto-drop holds off (main.js) until it is back.
     this.behind = perf.dropped > 0.05;
-    if (perf.steps > 0) {
-      this.coinCeiling = nextCoinCeiling(this.coinCeiling ?? this.quality.maxLiveCoins, perf.physics / perf.steps, this.quality.maxLiveCoins);
-    }
     this.perf = {
-      ceiling: this.coinCeiling ?? this.quality.maxLiveCoins,
       fps: perf.frames / perf.time,
       physicsMs: perf.physics / perf.frames,
       physicsMaxMs: perf.physicsMax,
@@ -3101,7 +3081,7 @@ export class CoinPusher {
       }
     }
     if (scored.length > 0) this.callbacks.onScore?.(scored, this.elapsed);
-    if (!this.closed && !this.settling) this.trimBuriedCoins();
+    this.full = machineFullFor(this.full, this.activeCoins.length);
 
     if (!this.quality.reducedMotion) {
       const pulse = 0.75 + 0.2 * Math.sin(this.elapsed * 3);
