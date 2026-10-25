@@ -629,4 +629,5 @@ html[data-stood] .hud__actions { grid-column: 1; grid-row: 2; justify-self: end;
 /* Stood up, the tuning toggle joins the other buttons on the deck, at its left end, and its panel
    opens upwards over the flat half rather than down over the upright one. */
 html[data-stood] .tune-dock { position: fixed; top: auto; bottom: max(2.5rem, calc(env(safe-area-inset-bottom) + 1.5rem)); left: max(1rem, env(safe-area-inset-left)); transform: none; }
-html[data-stood] .tune-panel { order: -1; max-height: calc(50dvh - 4rem); }
+/* Under the fold: half the display, less the dock's offset, the toggle and the gap above it. */
+html[data-stood] .tune-panel { order: -1; max-height: calc(50dvh - 6.5rem - env(safe-area-inset-bottom)); }

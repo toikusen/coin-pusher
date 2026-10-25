@@ -3061,8 +3061,12 @@ export class CoinPusher {
       this.fold = THREE.MathUtils.damp(this.fold, this.foldTarget, 12, frameDelta);
       if (Math.abs(this.fold - this.foldTarget) < 0.001) this.fold = this.foldTarget;
       const stood = stoodFor(this.stood, this.fold);
-      // The layout change resizes the canvas, and resize re-poses the camera for it.
-      if (stood !== this.stood) this.callbacks.onStood?.((this.stood = stood));
+      // The layout change resizes the canvas. Size it now, before this frame draws, rather than
+      // waiting a frame for the ResizeObserver - resize also re-poses the camera for it.
+      if (stood !== this.stood) {
+        this.callbacks.onStood?.((this.stood = stood));
+        this.resize?.();
+      }
       this.poseCamera();
     }
     // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).
