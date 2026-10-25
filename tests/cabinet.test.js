@@ -28,7 +28,7 @@ const mirror = (name, spec) => ({
 
 // Seven newels define six bays, numbered from the player back to the pin board's sill, where the
 // fence ends (tools/build_cabinet.py FENCE_END).
-const FENCE_END = 2.42;
+const FENCE_END = 2.01;
 const FENCE_NEWELS = Array.from({ length: 7 }, (_, j) => -4.38 + ((FENCE_END + 4.38) / 6) * j);
 const FENCE_BAYS = FENCE_NEWELS.slice(0, -1).map((c, j) => (c + FENCE_NEWELS[j + 1]) / 2);
 

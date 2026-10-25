@@ -31,11 +31,11 @@ from blender_lib import (  # noqa: E402  - needs the path above
 
 OUT = ROOT / "public" / "models" / "cabinet.glb"
 
-# The fence stops at the pin board's sill (dropZoneZ - 0.1 at the default bed, z_local 2.42) with a
+# The fence stops at the pin board's sill (dropZoneZ - 0.1 at the default bed, z_local 2.01) with a
 # newel, rather than running on to the back shell: on a foldable the sill sits on the crease, and a
 # rail carried past it was drawn up the standing half, so the crease bent it. Six bays still, for
 # the lamp chase (CoinPusher.js FENCE_LAMP_BAYS).
-FENCE_END = 2.42
+FENCE_END = 2.01
 FENCE_NEWELS = tuple(-4.38 + (FENCE_END + 4.38) / 6 * j for j in range(7))
 FENCE_BAYS = tuple((a + b) / 2 for a, b in zip(FENCE_NEWELS, FENCE_NEWELS[1:]))
 

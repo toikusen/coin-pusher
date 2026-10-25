@@ -234,7 +234,10 @@ export const GAME = {
   // 3.32 -> 3.68 follows the retreat extreme by 0.36; the unswept span stays at its tested limit.
   // 3.68 -> 4.04 adds half a coin of visible upper travel. With the test pusher corrected to include
   // its real rear extension, the two-diameter unswept span still clears the end-to-end payout floor.
-  scraperZ: 4.04,
+  // 4.04 -> 3.68 gives that half coin back for frame time: the strip hoarded ~100 coins whatever the
+  // drop rate. At 6x CPU throttle the tray fell 103 -> 67 coins and the mean physics step 5.4 ->
+  // 4.6 ms. 3.32 halves the tray again but leaves a strip shallower than the bonus chest.
+  scraperZ: 3.68,
   // The visible scraper plate stands 1.2 tall off the tray, and its collision guard reaches
   // higher still, to the top of the side glass. A rail coin can bounce higher than the visible plate after hitting the pile;
   // without this guard it can vault the scraper and become stranded on the fixed rear deck.
@@ -260,7 +263,8 @@ export const GAME = {
   // 2.56 -> 3.06 is not a move: it is what machineGeometryFor derives from the defaults, and so
   // where the game has really been landing coins. The literal had drifted, and the tests that read
   // it were checking a landing point the game never used - the payout guard included.
-  dropZoneZ: 3.06,
+  // 3.06 -> 2.79 is the same derivation again, after scraperZ 3.68.
+  dropZoneZ: 2.79,
   // How much clear tray the landing keeps between the coin's back edge and the scraper's face.
   // What sets the landing point is now this gap, not the tray's front lip: the lip bound only ever
   // said "far enough back not to spill on arrival", which put every drop 0.04 from the spill line -
@@ -576,7 +580,7 @@ export const COIN_RADIUS = 0.27;
 export const CABINET_BED_LENGTH = 9.06;
 
 export const MACHINE_GEOMETRY_DEFAULTS = Object.freeze({
-  scraperZ: 4.04,
+  scraperZ: 3.68,
   upperCenterZ: 3.16,
   upperLength: 6.33, // pusherDepth + pusherRearExtension
   lowerCenterZ: 1.36,
