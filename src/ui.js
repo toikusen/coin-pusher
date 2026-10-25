@@ -32,11 +32,16 @@ export function resetConfirmed(armedAt, now) {
   return now - armedAt <= RESET_CONFIRM_MS;
 }
 
+// How long the payout popup stays up: a coin's, and a chest prize's (styles.css matches both).
+const REWARD_MS = 1200;
+const REWARD_JACKPOT_MS = 2000;
+const NOTICE_MS = 1600;
+
 export function collectUI() {
   const ids = [
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
     'gameCanvas', 'field', 'loading', 'loadError', 'errorMessage', 'retryButton',
-    'reward', 'rewardAmount', 'rewardCombo', 'dropButton', 'autoButton',
+    'reward', 'rewardAmount', 'rewardCombo', 'notice', 'dropButton', 'autoButton',
     'soundButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
     'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset', 'tuneGeometryReset',
     'hdriHorizontal', 'hdriHorizontalValue', 'hdriVertical', 'hdriVerticalValue', 'hdriReset',
@@ -145,6 +150,9 @@ export class GameUI {
 
   // jackpot is the prize's own headline when a chest pays - '' or absent for a normal payout.
   reward({ total, combo, premium, bonus, jackpot }) {
+    // A chest prize holds the popup for its whole run: the coins it shakes or rains over the lip
+    // start paying a second later, and their '+1's must not wipe it.
+    if (!jackpot && performance.now() < (this.jackpotUntil ?? 0)) return;
     clearTimeout(this.rewardTimer);
     this.el.rewardAmount.textContent = `+${total}`;
     // The bonus is paid once per chain, so it cannot carry the combo readout on its own: past
@@ -156,10 +164,23 @@ export class GameUI {
       : combo >= GAME.comboThreshold
         ? `COMBO ×${combo}`
         : premium ? 'STAR COIN ×3' : 'NICE DROP';
+    const showFor = jackpot ? REWARD_JACKPOT_MS : REWARD_MS;
+    this.jackpotUntil = jackpot ? performance.now() + showFor : 0;
     this.el.reward.classList.remove('is-visible');
+    this.el.reward.classList.toggle('is-jackpot', Boolean(jackpot));
     void this.el.reward.offsetWidth;
     this.el.reward.classList.add('is-visible');
-    this.rewardTimer = window.setTimeout(() => this.el.reward.classList.remove('is-visible'), 1200);
+    this.rewardTimer = window.setTimeout(() => this.el.reward.classList.remove('is-visible'), showFor);
+  }
+
+  // A short line over the machine for something that is not a payout - a chest arriving.
+  notice(text) {
+    clearTimeout(this.noticeTimer);
+    this.el.notice.textContent = text;
+    this.el.notice.classList.remove('is-visible');
+    void this.el.notice.offsetWidth;
+    this.el.notice.classList.add('is-visible');
+    this.noticeTimer = window.setTimeout(() => this.el.notice.classList.remove('is-visible'), NOTICE_MS);
   }
 
   armReset(armed) {

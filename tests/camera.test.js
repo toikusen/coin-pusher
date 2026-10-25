@@ -320,11 +320,23 @@ describe('power-on', () => {
   });
 
   it('races the lamps front to back twice, then stops', async () => {
-    const { powerOnLampLit } = await import('../src/game/CoinPusher.js');
-    const bays = Array.from({ length: 12 }, (_, step) => powerOnLampLit(step * 0.07 + 0.01));
+    const { lampRaceLit } = await import('../src/game/CoinPusher.js');
+    const bays = Array.from({ length: 12 }, (_, step) => lampRaceLit(step * 0.07 + 0.01));
     expect(bays).toEqual([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
-    expect(powerOnLampLit(12 * 0.07 + 0.01)).toBe(0);
-    expect(powerOnLampLit(-1)).toBe(0);
-    expect(powerOnLampLit(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(lampRaceLit(12 * 0.07 + 0.01)).toBe(0);
+    expect(lampRaceLit(-1)).toBe(0);
+    expect(lampRaceLit(Number.NEGATIVE_INFINITY)).toBe(0);
+  });
+});
+
+describe('reel locks', () => {
+  it('reports each reel once, in order, as the spin clock passes its lock', async () => {
+    const { reelsLockedBetween } = await import('../src/game/CoinPusher.js');
+    const locks = [0.63, 1.27, 2.2];
+    expect(reelsLockedBetween(0, 0.5, locks)).toEqual([]);
+    expect(reelsLockedBetween(0.6, 0.63, locks)).toEqual([0]);
+    expect(reelsLockedBetween(0.63, 0.7, locks)).toEqual([]);
+    // A long frame across two locks reports both.
+    expect(reelsLockedBetween(1, 2.5, locks)).toEqual([1, 2]);
   });
 });

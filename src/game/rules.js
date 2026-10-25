@@ -61,7 +61,8 @@ export function chestsDue(previousScore, score) {
 }
 
 // The three faces one chest's spin locks on. Each GAME.slotOutcomes entry owns a slice of [0, 1)
-// worth its chance; anything past the last slice is a miss. random is injectable so a test can
+// worth its chance; anything past the last slice is a miss, which the shipped chances (summing to
+// 1) never leave room for - it is there for a config that does, and for cheats.slot = 'miss'. random is injectable so a test can
 // pin the result. The whole outcome is decided here, up front - the reels only play it back.
 export function rollSlotResult(random = Math.random) {
   if (CHEATS.slot) return forcedSlotResult(CHEATS.slot, random);

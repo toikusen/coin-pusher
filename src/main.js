@@ -10,6 +10,7 @@ import { TUNING_DEFAULTS } from './game/physics.js';
 import { CHEATS } from './game/cheats.js';
 import { calculateReward, chestsDue } from './game/rules.js';
 import { GameAudio } from './audio.js';
+import { tapHaptic, thudHaptic, winHaptic } from './haptics.js';
 import { hasHinge, watchHinge } from './hinge.js';
 import { loadProgress, saveProgress } from './storage.js';
 import { collectUI, GameUI, GEOMETRY_CONTROLS, RESET_CONFIRM_MS, resetConfirmed, TUNING_CONTROLS } from './ui.js';
@@ -124,7 +125,7 @@ function attemptDrop() {
   }
   state.credits -= 1;
   audio.drop();
-  navigator.vibrate?.(12);
+  tapHaptic();
   renderState();
 }
 
@@ -183,7 +184,7 @@ function awardJackpot() {
   ui.reward({ total: reward, combo: state.combo, premium: true, bonus: 0, jackpot: '寶箱 777 JACKPOT' });
   ui.announce(`寶箱 777！獲得 ${reward} 分`);
   audio.jackpot();
-  navigator.vibrate?.([30, 40, 60]);
+  winHaptic();
   if (state.bestScore > progress.bestScore) {
     progress.bestScore = state.bestScore;
     persist();
@@ -198,29 +199,30 @@ function awardCoinRain() {
   ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `錢袋 BONUS ×${coins} 硬幣` });
   ui.announce(`錢袋大獎！${coins} 枚硬幣從天而降`);
   audio.jackpot();
-  navigator.vibrate?.([20, 30, 20, 40]);
+  winHaptic();
 }
 
 // Seismographs. Like the money bag, the prize is a changed pile rather than points: the shake
 // walks coins over the lip and they pay through the normal payout loop.
 function awardQuake() {
   game?.shakeTable(GAME.quakeSeconds);
-  // No reward panel: the prize is not a number, and the coins it shakes over the lip raise their
-  // own '+N' a second later. A '+0' popup on a jackpot reads as a bug.
+  // A banner, not the reward panel: the prize is not a number, and the coins it shakes over the
+  // lip raise their own '+N' a second later. A '+0' popup on a jackpot reads as a bug.
+  ui.notice('地震大獎！');
   ui.announce('地震大獎！檯面劇烈震動，硬幣被震落');
   audio.jackpot();
-  navigator.vibrate?.([60, 30, 60, 30, 120]);
+  winHaptic();
 }
 
 // Gilded coins. The only prize that multiplies what the player has already built instead of adding
-// to it: a share of the plain coins on the machine turn premium, so it pays nothing on an empty
-// machine, rewards a hoarded pile, and like the bag and the quake it only cashes out once those
-// coins are pushed off.
+// to it: a share of the plain coins on the machine turn premium, so it rewards a hoarded pile, and
+// like the bag and the quake it only cashes out once those coins are pushed off. On a machine with
+// nothing to gild it pays a money bag instead.
 function awardGild() {
   const coins = game?.gildCoins(GAME.gildRatio) ?? 0;
+  // Every chest pays, so a gild on a machine with nothing to gild becomes a money bag instead.
   if (coins === 0) {
-    ui.announce('鍍金大獎！但檯面上沒有普通硬幣可以鍍');
-    audio.error();
+    awardCoinRain();
     return;
   }
   // Same convention as the money bag: the popup counts coins, not points. The points arrive later,
@@ -228,7 +230,7 @@ function awardGild() {
   ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `鍍金 BONUS ×${coins} 枚` });
   ui.announce(`鍍金大獎！檯面上 ${coins} 枚硬幣變成 ${GAME.premiumValue} 分`);
   audio.jackpot();
-  navigator.vibrate?.([20, 40, 20, 40, 20]);
+  winHaptic();
 }
 
 // One entry per reel symbol, keyed the same as GAME.slotOutcomes. A new slot event is a config
@@ -239,6 +241,22 @@ const CHEST_PRIZES = {
   quake: awardQuake,
   gild: awardGild,
 };
+
+// Chests dropped on the same turn - two thresholds crossed by one payout, or a batch held through
+// a pile settle - are announced together, once.
+let chestNotice = { count: 0, timer: 0 };
+function noteChestDrop() {
+  chestNotice.count += 1;
+  if (chestNotice.timer) return;
+  chestNotice.timer = window.setTimeout(() => {
+    const { count } = chestNotice;
+    chestNotice = { count: 0, timer: 0 };
+    ui.notice(count > 1 ? `寶箱出現 ×${count}！` : '寶箱出現！');
+    ui.announce(count > 1 ? `${count} 個寶箱掉進機台，把它推落就能轉拉霸` : '寶箱掉進機台，把它推落就能轉拉霸');
+    audio.chestDrop();
+    thudHaptic();
+  }, 0);
+}
 
 // win is the slotWin result - the symbol three reels showed, or null. A miss still gets an
 // announcement, because the player watched a chest cross the whole machine and silence reads as
@@ -270,7 +288,8 @@ function flushPayout() {
   ui.announce(`掉落 ${coins.length} 枚，獲得 ${result.total} 分`);
   if (result.bonus > 0) audio.jackpot();
   else audio.payout(premium);
-  navigator.vibrate?.(result.bonus > 0 ? [25, 35, 45] : 20);
+  if (result.bonus > 0) thudHaptic();
+  else tapHaptic();
 
   for (let due = chestsDue(scoreBefore, state.score); due > 0; due -= 1) game?.dropChest(awardChestPrize);
 
@@ -478,6 +497,13 @@ async function boot() {
       onScore: handleScore,
       onBoardHit: (kind, strength) => audio.boardHit(kind, strength),
       onStandUp: () => audio.powerOn(),
+      // The last reel's lock is the prize itself, which brings its own sound and haptic.
+      onReelStop: (index, last) => {
+        audio.reelStop(index);
+        if (!last) tapHaptic();
+      },
+      onReelTick: () => audio.reelTick(),
+      onChestDrop: noteChestDrop,
       onError: (message) => ui.error(message),
     }).init();
     if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));

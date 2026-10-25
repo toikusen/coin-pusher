@@ -277,6 +277,33 @@ button:disabled { cursor: not-allowed; }
 }
 .reward::before { content: ""; width: 0.5rem; height: 0.5rem; margin-bottom: 0.375rem; border: 1px solid var(--gold-200); background: var(--purple-500); transform: rotate(45deg); }
 .reward.is-visible { animation: reward-rise 1.2s var(--ease-out) both; }
+/* A chest prize: bigger, and up for 2 s (ui.js REWARD_JACKPOT_MS). */
+.reward.is-jackpot.is-visible { animation-duration: 2s; }
+.reward.is-jackpot strong { font-size: 3rem; text-shadow: 0 0 1.25rem rgba(242, 201, 76, 0.75), 0 2px 2px #000; }
+.reward.is-jackpot span { font-size: 0.875rem; color: var(--gold-200); }
+/* A chest arriving: a banner low over the bed, clear of the payout popup above it. */
+.notice {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  z-index: 4;
+  padding: 0.375rem 1rem;
+  border-block: 1px solid var(--gold-500);
+  background: linear-gradient(90deg, transparent, #081020e6 20%, #081020e6 80%, transparent);
+  color: var(--gold-200);
+  font: 600 1rem/1.4 var(--font-body);
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.notice.is-visible { animation: notice-pop 1.6s var(--ease-out) both; }
+@keyframes notice-pop {
+  0% { opacity: 0; transform: translate(-50%, 0.5rem) scale(0.9); }
+  15%, 75% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -0.5rem) scale(1); }
+}
 .reward strong { color: var(--gold-200); font: 600 2.25rem/1.1 var(--font-display); font-variant-numeric: tabular-nums; text-shadow: 0 2px 2px #000; }
 .reward span { margin-top: 0.375rem; color: var(--mint-300); font: 600 0.6875rem/1.6 var(--font-tech), var(--font-body); letter-spacing: 0.12em; overflow-wrap: anywhere; }
 .status-layer {
@@ -544,7 +571,7 @@ button:disabled { cursor: not-allowed; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
-  .reward.is-visible { opacity: 1; }
+  .reward.is-visible, .notice.is-visible { opacity: 1; }
 }
 /* The hinge camera assumes the entire display, with the controls below the fold. */
 html[data-fold] .shell { padding: 0; }

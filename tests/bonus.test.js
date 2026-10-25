@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { CoinPusher } from '../src/game/CoinPusher.js';
 import { GAME } from '../src/game/config.js';
 
+const SPIN = GAME.slotReelLocks.at(-1);
+
 // The bonus stage's spin queue, driven through the prototype rather than a real CoinPusher: the
 // constructor wants a canvas, a GPU and the model files, and none of that decides who spins when.
 // Everything updateBonus touches on the way to the reels is stubbed flat.
@@ -15,7 +17,9 @@ const stage = () => ({
   reelDrums: [],
   reelSymbols: [GAME.slotIdleSymbol, GAME.slotIdleSymbol, GAME.slotIdleSymbol],
   reelPanel: { position: { y: 0, z: 0 }, getWorldPosition: (target) => target.set(0, 0, 0) },
+  callbacks: {},
   drawReels() {},
+  reelAngle: CoinPusher.prototype.reelAngle,
   emitParticles() {},
   spinSlot: CoinPusher.prototype.spinSlot,
   startSpin: CoinPusher.prototype.startSpin,
@@ -40,7 +44,7 @@ describe('slot spin queue', () => {
     expect(self.slotQueue).toHaveLength(1);
     expect(self.slotSpin.notify).toBeTypeOf('function');
 
-    run(self, GAME.slotSpinSeconds);
+    run(self, SPIN);
     expect(results).toHaveLength(1);
     // Reels held on the first result while the queue waits its turn.
     expect(self.slotSpin).toBeNull();
@@ -49,7 +53,7 @@ describe('slot spin queue', () => {
     expect(self.slotSpin).not.toBeNull();
     expect(self.slotQueue).toHaveLength(0);
 
-    run(self, GAME.slotSpinSeconds);
+    run(self, SPIN);
     expect(results).toHaveLength(2);
     expect(self.slotSpin).toBeNull();
   });
@@ -59,7 +63,7 @@ describe('slot spin queue', () => {
     const seen = [];
     // Enough chests that identical faces every time would be a coincidence, not a shared spin.
     for (let index = 0; index < 12; index += 1) self.spinSlot(() => seen.push(self.reelSymbols.join('')));
-    run(self, 12 * (GAME.slotSpinSeconds + GAME.slotHoldSeconds));
+    run(self, 12 * (SPIN + GAME.slotHoldSeconds));
     expect(seen).toHaveLength(12);
     expect(new Set(seen).size).toBeGreaterThan(1);
   });
@@ -67,11 +71,35 @@ describe('slot spin queue', () => {
   it('idles without a queue rather than holding the reels', () => {
     const self = stage();
     self.spinSlot(() => {});
-    run(self, GAME.slotSpinSeconds);
+    run(self, SPIN);
     expect(self.slotSpin).toBeNull();
     // No queue, so the next chest to pay spins on the spot - the hold is only ever paid between
     // two chests that landed together.
     self.spinSlot(() => {});
     expect(self.slotSpin).not.toBeNull();
+  });
+});
+
+describe('slot spin feedback', () => {
+  it('locks each reel once, flags the last, ticks only while it crawls in, and pays after', () => {
+    const self = stage();
+    const events = [];
+    self.callbacks = {
+      onReelStop: (index, last) => events.push(`stop${index}${last ? '!' : ''}`),
+      onReelTick: () => events.push('tick'),
+    };
+    self.spinSlot((win) => events.push(`pay:${win}`));
+    run(self, SPIN + 0.1);
+    const stops = events.filter((event) => event.startsWith('stop'));
+    expect(stops).toEqual(['stop0', 'stop1', 'stop2!']);
+    const ticks = events.map((event, index) => [event, index]).filter(([event]) => event === 'tick');
+    expect(ticks.length).toBeGreaterThan(2);
+    // Every tick between the second reel's lock and the last's.
+    for (const [, index] of ticks) {
+      expect(index).toBeGreaterThan(events.indexOf('stop1'));
+      expect(index).toBeLessThan(events.indexOf('stop2!'));
+    }
+    expect(events.at(-1)).toMatch(/^pay:/);
+    expect(events.at(-1)).not.toBe('pay:null');
   });
 });

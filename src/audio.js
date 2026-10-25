@@ -50,6 +50,16 @@ export class GameAudio {
     [523, 659, 784, 1046].forEach((frequency, index) => this.tone(frequency, 0.22, 'triangle', 0.03, index * 0.07));
   }
   error() { this.tone(150, 0.18, 'square', 0.018); }
+  // A reel locking: a short clack, each reel a step higher so the three read as a run.
+  reelStop(index) { this.tone(180 + index * 60, 0.06, 'square', 0.022); }
+  // The last reel ticking past a face as it crawls in.
+  reelTick() { this.tone(1100, 0.025, 'square', 0.01); }
+  // A chest dropping into the machine: a low knock and a bright two-note call.
+  chestDrop() {
+    this.tone(110, 0.12, 'triangle', 0.03);
+    this.tone(659, 0.12, 'sine', 0.025, 0.1);
+    this.tone(988, 0.18, 'sine', 0.025, 0.2);
+  }
   // The machine standing up: a latch clunk, then a rising power-on run under the racing lamps.
   powerOn() {
     this.tone(90, 0.09, 'square', 0.03);

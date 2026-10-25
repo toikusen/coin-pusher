@@ -239,16 +239,21 @@ export function fenceLampLit(time) {
   return (Math.floor(time / FENCE_LAMP_STEP) % FENCE_LAMP_BAYS) + 1;
 }
 
-// Opening a foldable stands the machine up, and it powers on: the lamps race front to back twice,
-// a bay every POWER_ON_STEP, then fall back to the marquee beat.
-const POWER_ON_STEP = 0.07;
-const POWER_ON_LAPS = 2;
+// The machine's fanfare: the lamps race front to back twice, a bay every LAMP_RACE_STEP, then fall
+// back to the marquee beat. It plays when a foldable stands the machine up and on every chest prize.
+const LAMP_RACE_STEP = 0.07;
+const LAMP_RACE_LAPS = 2;
 
-/** The bay racing during power-on, `since` seconds after it began, or 0 once it is over. */
-export function powerOnLampLit(since) {
-  const step = Math.floor(since / POWER_ON_STEP);
-  if (!(since >= 0) || step >= FENCE_LAMP_BAYS * POWER_ON_LAPS) return 0;
+/** The bay racing `since` seconds into a lamp race, or 0 once it is over. */
+export function lampRaceLit(since) {
+  const step = Math.floor(since / LAMP_RACE_STEP);
+  if (!(since >= 0) || step >= FENCE_LAMP_BAYS * LAMP_RACE_LAPS) return 0;
   return (step % FENCE_LAMP_BAYS) + 1;
+}
+
+/** The reels (indices into `locks`) that locked between two points of the spin clock. */
+export function reelsLockedBetween(previous, now, locks) {
+  return locks.flatMap((lock, index) => (previous < lock && lock <= now ? [index] : []));
 }
 
 /**
@@ -410,7 +415,7 @@ export class CoinPusher {
     // Set by the first hinge reading - see setHingeAngle.
     this.foldable = false;
     this.standUpArmed = true;
-    this.powerOnAt = -Infinity;
+    this.lampRaceAt = -Infinity;
     // Mechanical surfaces re-skinned when a cabinet shell loads: the tray, its inlay, the blade,
     // the scraper and the rear deck. Their own materials are tuned for the procedural machine -
     // the scraper's gold emissive in particular only reads as a lit guard against procedural
@@ -1620,21 +1625,26 @@ export class CoinPusher {
     }
   }
 
-  // Poses the drums: during a spin from the spin clock (drumAngleAt), otherwise on the faces shown.
+  // A drum's angle during a spin, off the spin clock (drumAngleAt).
+  reelAngle(index, spin) {
+    const locks = GAME.slotReelLocks;
+    return drumAngleAt({
+      start: spin.startAngles[index],
+      target: drumAngleFor(spin.faces[index]),
+      elapsed: spin.elapsed,
+      lockAt: locks[index],
+      // Each drum at its own pace, or the two still turning roll past in lock-step.
+      speed: 8 + index * 1.2,
+      ...(index === locks.length - 1 ? { settle: GAME.slotLastSettle } : {}),
+    });
+  }
+
+  // Poses the drums: during a spin from the spin clock, otherwise on the faces shown.
   drawReels() {
     if (!this.reelDrums) return;
     const spin = this.slotSpin;
     this.reelDrums.forEach((drum, index) => {
-      const angle = spin
-        ? drumAngleAt({
-          start: spin.startAngles[index],
-          target: drumAngleFor(spin.faces[index]),
-          elapsed: spin.elapsed,
-          lockAt: GAME.slotSpinSeconds * (index + 1) / 3,
-          // Each drum at its own pace, or the two still turning roll past in lock-step.
-          speed: 8 + index * 1.2,
-        })
-        : drumAngleFor(this.reelSymbols[index]);
+      const angle = spin ? this.reelAngle(index, spin) : drumAngleFor(this.reelSymbols[index]);
       drum.rotation.x = DRUM_DIRECTION * angle;
     });
     // A finished spin only, and never the idle face: three of a kind lights the drums gold.
@@ -1706,6 +1716,9 @@ export class CoinPusher {
     );
     body.setAngularVelocity({ x: 0, y: 1.8, z: 0 });
     chest.mesh.visible = true;
+    // Only once it is really in the world: a chest held through a pile settle tells the player
+    // when it lands, not when it was won.
+    this.callbacks?.onChestDrop?.();
     chest.drop = {
       landed: false,
       lowerBedLanded: false,
@@ -1849,11 +1862,25 @@ export class CoinPusher {
       if (this.slotHold <= 0) this.startSpin(this.slotQueue.shift());
       return;
     }
+    const locks = GAME.slotReelLocks;
+    const last = locks.length - 1;
+    const previous = spin.elapsed;
     spin.elapsed += delta;
     // The drums turn off the spin clock and lock left to right, the last on the final beat - see
     // drumAngleAt. The faces only count once the spin is over.
     this.drawReels();
-    if (spin.elapsed < GAME.slotSpinSeconds) return;
+    for (const index of reelsLockedBetween(previous, spin.elapsed, locks)) {
+      this.callbacks?.onReelStop?.(index, index === last);
+    }
+    // Once the others have locked, the last drum ticks past each face as it crawls in, so the
+    // ticks slow with it. Read off the drum itself rather than scheduled ahead, so a dropped frame
+    // or a closed hinge cannot put the sound out of step with what is on screen.
+    if (spin.elapsed > locks[last - 1] && spin.elapsed < locks[last]) {
+      const step = Math.floor(this.reelAngle(last, spin) / DRUM_STEP);
+      if (spin.lastStep !== undefined && step !== spin.lastStep) this.callbacks?.onReelTick?.();
+      spin.lastStep = step;
+    }
+    if (spin.elapsed < locks[last]) return;
     // Cleared before the last redraw, because that is what turns the glow on - see drawReels.
     this.slotSpin = null;
     this.reelSymbols = spin.faces;
@@ -1862,7 +1889,9 @@ export class CoinPusher {
     // Confetti on a win only - a miss gets the reels it earned and nothing else.
     if (win !== null) {
       const reel = this.reelPanel.getWorldPosition(new THREE.Vector3());
-      this.emitParticles(0, reel.y, reel.z, 18, true);
+      // As many sparks as the pool holds, up to a burst that reads from across the machine.
+      this.emitParticles(0, reel.y, reel.z, Math.min(48, this.particles?.length ?? 48), true);
+      this.lampRaceAt = this.elapsed;
     }
     this.slotHold = GAME.slotHoldSeconds;
     spin.notify?.(win);
@@ -2650,7 +2679,7 @@ export class CoinPusher {
       this.reelBezel.emissiveIntensity = 0.9 - 0.3 * Math.cos((this.elapsed * Math.PI * 2) / 0.8);
     }
     if (!this.fenceLamps?.length) return;
-    const racing = this.quality.reducedMotion ? 0 : powerOnLampLit(this.elapsed - this.powerOnAt);
+    const racing = this.quality.reducedMotion ? 0 : lampRaceLit(this.elapsed - this.lampRaceAt);
     const lit = this.quality.reducedMotion ? 0 : racing || fenceLampLit(this.elapsed);
     for (const { material, bay } of this.fenceLamps) {
       if (this.quality.reducedMotion) material.emissiveIntensity = 0.3;
@@ -3097,7 +3126,7 @@ export class CoinPusher {
       const standUp = standUpFor(this.standUpArmed, this.fold);
       this.standUpArmed = standUp.armed;
       if (standUp.fire) {
-        this.powerOnAt = this.elapsed;
+        this.lampRaceAt = this.elapsed;
         this.callbacks.onStandUp?.();
       }
       this.poseCamera();

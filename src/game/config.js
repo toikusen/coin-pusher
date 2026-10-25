@@ -329,9 +329,9 @@ export const GAME = {
   // fit part and nothing to hide. See docs/superpowers/specs/2026-09-08-cabinet-shell-design.md.
   // Bonus chest. Every chestScoreStep points a chest drops into the machine; it is scored exactly
   // like a coin - only when it has been swept off the upper tray, shoved across the lower bed and
-  // dropped over the payout lip does the slot machine spin at all, and the spin can still miss
-  // (slotOutcomes). chestReward is the 777 prize, not what a chest is worth on average - at even
-  // odds that is about 29 points, roughly 60% on top of the 50 that earned the chest.
+  // dropped over the payout lip does the slot machine spin at all, and every spin pays one of the
+  // four prizes (slotOutcomes). chestReward is the 777 prize, not what a chest is worth on average - at
+  // a quarter each that is 10 points from the 7s alone, plus the other three prizes' coins.
   // The chest is a real rigid body throughout: it lands at the back of the upper tray, hard against
   // the scraper (physics.js chestDropZ) at a random X, and from there it collides, tumbles and
   // rides the pile like anything else. It has no hold timer - it stays in the world until it falls.
@@ -396,7 +396,12 @@ export const GAME = {
   // there is nothing to turn. Kept as a key rather than dropped: a swapped-in model that faces
   // the other way is one number away from working again.
   slotYaw: 0,
-  slotSpinSeconds: 1.9,
+  // When each reel locks, seconds into the spin, left to right; the spin ends on the last. The
+  // first two keep the old even beat. The last runs on and crawls in over slotLastSettle seconds,
+  // ticking past its faces: every chest pays, so this is not suspense over whether it won - the
+  // first reel already shows what - but the drum-roll before the payout lands.
+  slotReelLocks: Object.freeze([0.63, 1.27, 2.2]),
+  slotLastSettle: 0.9,
   // Dead time between two queued chests' spins. Chests pay one at a time (CoinPusher.spinSlot), and
   // without a gap the reels would take off again on the same frame the last result landed - the win
   // glow and the HUD line both need a beat to be read. Only ever waited when a chest is queued.
@@ -407,21 +412,21 @@ export const GAME = {
   // pure decoration; the win still announces itself in the HUD.
   slotReelMaterial: 'reel_glass',
   // Reel symbols and the chance each one lands as a three of a kind - rolled in rules.js
-  // rollSlotResult. These do not have to add up to 1: whatever is left over is a miss, three
-  // faces that do not line up and pay nothing. Adding an event is one entry here plus one handler
-  // in main.js CHEST_PRIZES - nothing inside the slot itself is per-symbol.
-  // Four prizes at 0.18, and the 0.28 left over is the miss. They stay per-outcome numbers rather
-  // than a computed 1/n because the odds have been the main balancing knob here - this is a
-  // starting point, not a rule. tests/rules.test.js fails if the prizes ever add up to 1, which is
-  // the case where the miss silently disappears.
+  // rollSlotResult. Anything left over below 1 would be a miss, three faces that do not line up
+  // and pay nothing; the shipped four add up to exactly 1, so every chest pays, and
+  // tests/rules.test.js holds them to it. Adding an event is one entry here plus one handler in
+  // main.js CHEST_PRIZES - nothing inside the slot itself is per-symbol. They stay per-outcome
+  // numbers rather than a computed 1/n because the odds are the main balancing knob.
   // Expected value: the average prize is worth about 34 (40 jackpot, ~55 pushed-off bag, ~21
-  // measured quake, ~20 gild on a steady-state pile), so a chest pays about 0.72 * 34 = 24.
+  // measured quake, ~20 gild on a steady-state pile), so a chest pays about 34.
   // label is what the cheat panel and the HUD call it - the symbol itself is a drawing key.
   slotOutcomes: [
-    { symbol: '7', chance: 0.18, label: '777' },
-    { symbol: 'bag', chance: 0.18, label: '錢袋' },
-    { symbol: 'quake', chance: 0.18, label: '地震' },
-    { symbol: 'gild', chance: 0.18, label: '鍍金' },
+    // A quarter each, summing to exactly 1: a chest always pays. It takes a minute or two to ride
+    // the machine to the lip, and a 28% miss at the end of that read as the game taking it back.
+    { symbol: '7', chance: 0.25, label: '777' },
+    { symbol: 'bag', chance: 0.25, label: '錢袋' },
+    { symbol: 'quake', chance: 0.25, label: '地震' },
+    { symbol: 'gild', chance: 0.25, label: '鍍金' },
   ],
   // What the reels show with nothing in play. Deliberately not a prize symbol: an idle machine
   // must not sit there displaying a win it has not paid. Once a chest drops, the reels cycle

@@ -157,16 +157,14 @@ describe('rollSlotResult', () => {
     }
   });
 
-  // The constant random also drives the miss faces, so this covers the forced mismatch: three
-  // identical draws must still come back as a losing line.
-  it('misses past the last band, and a miss never reads as a win', () => {
-    expect(slotWin(rollSlotResult(() => 0.999))).toBeNull();
-    expect(slotWin(rollSlotResult(() => 0))).toBe(GAME.slotOutcomes[0].symbol);
-  });
-
-  it('leaves room for a miss and for every prize', () => {
+  // The request this guards: a chest rides the machine for a minute or two, and a miss at the end
+  // of that read as the game taking it back. The shipped chances leave no room past the last band.
+  it('always pays: the chances cover the whole roll', () => {
     const paid = GAME.slotOutcomes.reduce((sum, outcome) => sum + outcome.chance, 0);
-    expect(paid).toBeLessThan(1);
+    expect(paid).toBe(1);
+    for (const roll of [0, 0.5, 0.999, 1 - Number.EPSILON]) {
+      expect(slotWin(rollSlotResult(() => roll))).not.toBeNull();
+    }
     for (const { chance } of GAME.slotOutcomes) expect(chance).toBeGreaterThan(0);
   });
 
