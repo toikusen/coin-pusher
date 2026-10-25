@@ -11,7 +11,11 @@ export const GAME = {
   comboWindow: 1.4,
   comboThreshold: 5,
   comboBonus: 3,
-  autoInterval: 0.9,
+  // Seconds between auto-drops. Every coin in play is stepped every frame, so the drop rate is also
+  // the pile's size: with Chrome's CPU slowed 6x as a stand-in for a phone, 0.9 s kept ~242 coins
+  // in play at 6.4 ms a physics step and still lost game time; 1.1 s, ~229 at 5.8 ms, 54 fps at
+  // the 5th percentile and no lost time; 1.3 s was faster still but made auto-play drag.
+  autoInterval: 1.1,
   // Tied to playfieldFrontZ by exactly 0.05 - "keeps the payout crossing aligned with the
   // shortened front edge" asserts it, so the two always move together.
   edgeZ: -1.59,
