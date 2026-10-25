@@ -1,3 +1,14 @@
+/* Cinzel (SIL OFL) ships with the app, latin subset, one variable file for every weight: an app
+   must not fetch its own type from the network, offline or not. Chinese is set in the system's
+   PingFang TC, which every iPhone has. */
+@font-face {
+  font-family: "Cinzel";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("/fonts/cinzel-latin.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   /* Shared with the Nocturne cabinet's enamel, brass, and glass. */
@@ -31,7 +42,7 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --font-display: "Cinzel", "Palatino Linotype", serif;
   --font-tech: "Cinzel", "Palatino Linotype", serif;
-  --font-body: "Noto Sans TC", sans-serif;
+  --font-body: "PingFang TC", "Noto Sans TC", sans-serif;
 }
 
 * { box-sizing: border-box; }
