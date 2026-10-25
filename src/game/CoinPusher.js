@@ -85,10 +85,16 @@ export const FLAT_CAMERA = { position: [0, 5.25, -7.5], target: [0, 4, 0] };
 // top, and all of it held at every step of the blend from FLAT_CAMERA, on whichever layout the
 // hinge has switched to (tests/camera.test.js). Within those, the widest pin board: searched over
 // position, target and fov for the stood-up layout, where the canvas runs to the top of the display
-// (html[data-stood]). Backing off and narrowing the fov from 66 flattens the perspective, so the
+// (html[data-fold]). Backing off and narrowing the fov from 66 flattens the perspective, so the
 // board grows ~18% while the nearer lip stays in. The coin tray under the lip fills the band below
 // it - see chuteZ.
 export const FOLD_CAMERA = { fov: 50, position: [0, 14, -10.5], target: [0, 9, 0] };
+// A foldable's flat pose. The sill rides the fold at every angle there (poseCamera), so the open
+// end needs its own pose: FLAT_CAMERA's frame slid up that far loses the slot's crown. ~10 degrees
+// of pitch, searched with FOLD_CAMERA fixed for the widest board at 150 degrees, the comfiest
+// angle to play at, under the same constraints. Its board is the same size as the fold pose's
+// within 1%, so folding stands the board up and tips the bed without zooming either.
+export const OPEN_CAMERA = { fov: 54, position: [0, 11.5, -11.5], target: [0, 9.5, 0] };
 // The pin board coins fall through, standing over the drop zone. Coins exit at its bottom onto the
 // tray - the same z as ever, so every coin still lands on the moving tray - and its half-width is
 // the old landing spread, so pins scatter the drop without ever throwing it off the tray.
@@ -197,20 +203,6 @@ export function closedFor(wasClosed, hingeDegrees) {
   if (hingeDegrees < 60) return true;
   if (hingeDegrees > 65) return false;
   return Boolean(wasClosed);
-}
-
-/**
- * Whether the HUD should step off the upright half, from the eased fold rather than the hinge, so
- * the layout and the camera always agree: a hinge snapped flat would otherwise put the HUD back
- * over a camera still in the stood-up pose, and that pose cuts the slot's crown off the shorter
- * canvas. On past the fold of a 130 degree hinge, off under that of 140, holding between so a
- * fold resting near the line does not flicker the layout.
- */
-export function stoodFor(wasStood, fold) {
-  if (!Number.isFinite(fold)) return false;
-  if (fold > foldFor(130)) return true;
-  if (fold < foldFor(140)) return false;
-  return Boolean(wasStood);
 }
 
 /**
@@ -394,7 +386,8 @@ export class CoinPusher {
     // foldTarget so a coarse hinge reading glides rather than jumps.
     this.fold = 0;
     this.foldTarget = 0;
-    this.stood = false;
+    // Set by the first hinge reading - see setHingeAngle.
+    this.foldable = false;
     // Mechanical surfaces re-skinned when a cabinet shell loads: the tray, its inlay, the blade,
     // the scraper and the rear deck. Their own materials are tuned for the procedural machine -
     // the scraper's gold emissive in particular only reads as a lit guard against procedural
@@ -2929,6 +2922,11 @@ export class CoinPusher {
   setHingeAngle(degrees) {
     this.foldTarget = foldFor(degrees);
     this.closed = closedFor(this.closed, degrees);
+    // A hinge reading means a foldable: from now on the sill rides the fold at every angle.
+    if (!this.foldable) {
+      this.foldable = true;
+      this.poseCamera();
+    }
   }
 
   /** A point in the pin board's plane (z defaults to the coins' plane), in world space. */
@@ -2937,20 +2935,23 @@ export class CoinPusher {
     return this.boardInner.localToWorld(new THREE.Vector3(x, y, z));
   }
 
-  // The pose for the current fold: position, target and fov blended between the flat and fold poses.
+  // The pose for the current fold: position, target and fov blended from the open pose (the flat
+  // one off a foldable) to the fold pose.
   poseCamera() {
     const fold = this.fold;
+    const open = this.foldable ? OPEN_CAMERA : { ...FLAT_CAMERA, fov: fovForAspect(this.camera.aspect) };
     const lerp = (from, to) => from.map((value, index) => THREE.MathUtils.lerp(value, to[index], fold));
-    this.camera.position.set(...lerp(FLAT_CAMERA.position, FOLD_CAMERA.position));
-    this.camera.lookAt(...lerp(FLAT_CAMERA.target, FOLD_CAMERA.target));
+    this.camera.position.set(...lerp(open.position, FOLD_CAMERA.position));
+    this.camera.lookAt(...lerp(open.target, FOLD_CAMERA.target));
     // The board lies parallel to the screen at whatever pitch the camera now has - see boardReclineFor.
     this.camera.updateMatrixWorld();
     this.boardRig.rotation.x = boardReclineFor(this.camera.getWorldDirection(new THREE.Vector3()));
-    this.camera.fov = THREE.MathUtils.lerp(fovForAspect(this.camera.aspect), FOLD_CAMERA.fov, fold);
-    // FOLD_CAMERA only puts the sill near the fold: where the fold lands in the canvas moves with the
-    // HUD, the controls and the window, and a fixed target was 2.3 pt off on the device. So measure
-    // both - where this pose puts the sill, where the fold is - and slide the frame by the difference,
-    // scaled in with the fold.
+    this.camera.fov = THREE.MathUtils.lerp(open.fov, FOLD_CAMERA.fov, fold);
+    // The poses only put the sill near the fold: where the fold lands in the canvas moves with the
+    // controls and the window, and a fixed target was 2.3 pt off on the device. So measure both -
+    // where this pose puts the sill, where the fold is - and slide the frame by the difference, at
+    // every angle: the crease is the machine's hinge, and the sill sat below it part-way through the
+    // fold while the slide was scaled in with it, putting the crease across the pins at 135-155.
     this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
@@ -2958,7 +2959,7 @@ export class CoinPusher {
     const height = this.canvas.clientHeight;
     const top = this.canvas.getBoundingClientRect().top;
     const sillNdc = new THREE.Vector3(0, SILL_HEIGHT, GAME.dropZoneZ - 0.1).project(this.camera).y;
-    const shift = height ? foldShiftFor(window.innerHeight / 2 - top, height, sillNdc) * fold : 0;
+    const shift = this.foldable && height ? foldShiftFor(window.innerHeight / 2 - top, height, sillNdc) : 0;
     if (Math.abs(shift) >= 0.5) {
       this.camera.setViewOffset(width, height, 0, shift, width, height);
       this.camera.updateProjectionMatrix();
@@ -3060,13 +3061,6 @@ export class CoinPusher {
       // About a fifth of a second to settle; snaps the last sliver so it stops re-posing.
       this.fold = THREE.MathUtils.damp(this.fold, this.foldTarget, 12, frameDelta);
       if (Math.abs(this.fold - this.foldTarget) < 0.001) this.fold = this.foldTarget;
-      const stood = stoodFor(this.stood, this.fold);
-      // The layout change resizes the canvas. Size it now, before this frame draws, rather than
-      // waiting a frame for the ResizeObserver - resize also re-poses the camera for it.
-      if (stood !== this.stood) {
-        this.callbacks.onStood?.((this.stood = stood));
-        this.resize?.();
-      }
       this.poseCamera();
     }
     // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).

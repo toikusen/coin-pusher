@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import {
-  boardReclineFor, FLAT_CAMERA, FOLD_CAMERA, fovForAspect, PIN_BOARD,
+  boardReclineFor, FLAT_CAMERA, FOLD_CAMERA, fovForAspect, OPEN_CAMERA, PIN_BOARD,
 } from '../src/game/CoinPusher.js';
 import { nodeBoxes, overallBounds, readGlb } from './glb.js';
 import { GAME } from '../src/game/config.js';
@@ -14,10 +14,10 @@ import { GAME } from '../src/game/config.js';
 // height above slotY; local z + slotZ is world z; the player is at -Z.
 const MODEL = 'public/models/slot.glb';
 
-// Where the crown lands in both camera poses - lying flat and stood up on a foldable - on the
-// Duo's canvas for each: 669 x 768 under the HUD, 669 x 812 stood up with the HUD off it and the
-// fold 475.5 pt down (html[data-stood]). Model-local bounds are at scale 1; the machine is
-// enlarged by slotScale.
+// Where the crown lands in every camera pose: lying flat off a foldable (669 x 768 under the HUD),
+// and on a foldable open and stood up, on the full-height canvas (669 x 812) with the sill on the
+// fold 475.5 pt down (html[data-fold]). Model-local bounds are at scale 1; the machine is enlarged
+// by slotScale.
 const crownInFrame = (bounds) => {
   const crown = new THREE.Vector3(
     (bounds.max[0] * GAME.slotScale),
@@ -31,6 +31,7 @@ const crownInFrame = (bounds) => {
   const stood = 669 / 812;
   return [
     [FLAT_CAMERA, fovForAspect(flat), flat, 0, 0],
+    [OPEN_CAMERA, OPEN_CAMERA.fov, stood, 1, 1 - (2 * 475.5) / 812],
     [FOLD_CAMERA, FOLD_CAMERA.fov, stood, 1, 1 - (2 * 475.5) / 812],
   ].every(([pose, fov, aspect, fold, foldNdc]) => {
     const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 100);

@@ -1,18 +1,27 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import {
-  boardPins, boardReclineFor, closedFor, dropXAt, stoodFor, refillPose, FLAT_CAMERA, FOLD_CAMERA, foldFor, fovForAspect, PIN_BOARD, pathAt,
+  boardPins, boardReclineFor, closedFor, dropXAt, refillPose, FLAT_CAMERA, FOLD_CAMERA, OPEN_CAMERA, foldFor, fovForAspect, PIN_BOARD, pathAt,
 } from '../src/game/CoinPusher.js';
 import { GAME } from '../src/game/config.js';
 
-// The Duo's two canvases, with where the fold falls in each in NDC: flat, under the HUD (669 x 768);
-// stood up, from the top of the display with the fold 475.5 pt down (669 x 812, html[data-stood]).
-const FLAT_VIEW = { aspect: 669 / 768, foldNdc: -0.0184 };
+// The Duo's canvas, from the top of the display with the fold 475.5 pt down (669 x 812,
+// html[data-fold]), and where the fold falls in it in NDC.
 const STOOD_VIEW = { aspect: 669 / 812, foldNdc: 1 - (2 * 475.5) / 812 };
-// poseCamera's view offset, as a shift in NDC: it carries the sill onto the fold, scaled in with
-// the fold. Framing checks have to see what it sees.
-const sillShift = (camera, fold, view = STOOD_VIEW) =>
-  (view.foldNdc - new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1).project(camera).y) * fold;
+// poseCamera's view offset, as a shift in NDC: on a foldable it carries the sill onto the fold at
+// every angle. Framing checks have to see what it sees.
+const sillShift = (camera) =>
+  STOOD_VIEW.foldNdc - new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1).project(camera).y;
+const lerp = (from, to, t) => from.map((value, index) => value + (to[index] - value) * t);
+// The foldable's camera at a hinge angle, as poseCamera blends it.
+function foldCameraAt(degrees) {
+  const t = foldFor(degrees);
+  const camera = new THREE.PerspectiveCamera(OPEN_CAMERA.fov + (FOLD_CAMERA.fov - OPEN_CAMERA.fov) * t, STOOD_VIEW.aspect, 0.1, 100);
+  camera.position.set(...lerp(OPEN_CAMERA.position, FOLD_CAMERA.position, t));
+  camera.lookAt(...lerp(OPEN_CAMERA.target, FOLD_CAMERA.target, t));
+  camera.updateMatrixWorld();
+  return camera;
+}
 
 // The game camera: setupScene's position and target, with the fov the resize handler picks.
 function cameraFor(aspect) {
@@ -156,24 +165,10 @@ describe('hinge blend', () => {
   // The bug this guards: both poses framed the machine, but the straight-line blend between them
   // did not - at a 102 degree hinge the bed's lip sat under the controls. Every hinge angle the
   // game can be asked for has to keep the lip and the slot's crown in frame.
-  // The canvas changes with the layout at the stood-up switch, and inside its dead band either
-  // layout can be showing, so both are checked there.
   it('keeps the lip and the slot\'s crown in frame at every hinge angle', () => {
-    const lerp = (from, to, t) => from.map((value, index) => value + (to[index] - value) * t);
-    const cases = [];
     for (let degrees = 180; degrees >= 90; degrees -= 5) {
-      for (const stood of [false, true]) if (stoodFor(stood, foldFor(degrees)) === stood) cases.push([degrees, stood ? STOOD_VIEW : FLAT_VIEW]);
-    }
-    for (const [degrees, view] of cases) {
-      const { aspect } = view;
-      const t = foldFor(degrees);
-      const camera = new THREE.PerspectiveCamera(
-        fovForAspect(aspect) + (FOLD_CAMERA.fov - fovForAspect(aspect)) * t, aspect, 0.1, 100,
-      );
-      camera.position.set(...lerp(FLAT_CAMERA.position, FOLD_CAMERA.position, t));
-      camera.lookAt(...lerp(FLAT_CAMERA.target, FOLD_CAMERA.target, t));
-      camera.updateMatrixWorld();
-      const shift = sillShift(camera, t, view);
+      const camera = foldCameraAt(degrees);
+      const shift = sillShift(camera);
       for (const x of [-4.08, 4.08]) {
         const lip = new THREE.Vector3(x, 0, GAME.playfieldFrontZ).project(camera);
         lip.y += shift;
@@ -187,6 +182,21 @@ describe('hinge blend', () => {
       expect(crown.clone().project(camera).y + shift, `crown at ${degrees}`).toBeLessThan(0.96);
       expect(Math.abs(crown.project(camera).x), `crown x at ${degrees}`).toBeLessThan(1);
     }
+  });
+
+  // The request this guards: folding should stand the board up, not zoom it - at 150 degrees, the
+  // angle people play at, as much as at either end.
+  it('holds the board\'s size from flat to stood up', () => {
+    const pivot = new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1);
+    const widths = [];
+    for (let degrees = 180; degrees >= 90; degrees -= 5) {
+      const camera = foldCameraAt(degrees);
+      const recline = boardReclineFor(camera.getWorldDirection(new THREE.Vector3()));
+      const x = (side) => new THREE.Vector3(side * PIN_BOARD.halfWidth, PIN_BOARD.top, GAME.dropZoneZ)
+        .sub(pivot).applyAxisAngle(new THREE.Vector3(1, 0, 0), recline).add(pivot).project(camera).x;
+      widths.push(Math.abs(x(1) - x(-1)));
+    }
+    expect(Math.max(...widths) / Math.min(...widths)).toBeLessThan(1.03);
   });
 });
 
@@ -215,17 +225,9 @@ describe('pop-up board', () => {
   // The request this guards: the board should lie parallel to the upper half of the screen, not
   // be keystoned by a camera looking down at it, nor merely aimed at the camera.
   it('lays the board parallel to the screen at every hinge angle', () => {
-    const aspect = 669 / 768;
-    const lerp = (from, to, t) => from.map((value, index) => value + (to[index] - value) * t);
     const pivot = new THREE.Vector3(0, PIN_BOARD.bottom - 0.1, GAME.dropZoneZ - 0.1);
     for (let degrees = 180; degrees >= 90; degrees -= 10) {
-      const t = foldFor(degrees);
-      const camera = new THREE.PerspectiveCamera(
-        fovForAspect(aspect) + (FOLD_CAMERA.fov - fovForAspect(aspect)) * t, aspect, 0.1, 100,
-      );
-      camera.position.set(...lerp(FLAT_CAMERA.position, FOLD_CAMERA.position, t));
-      camera.lookAt(...lerp(FLAT_CAMERA.target, FOLD_CAMERA.target, t));
-      camera.updateMatrixWorld();
+      const camera = foldCameraAt(degrees);
       const recline = boardReclineFor(camera.getWorldDirection(new THREE.Vector3()));
       const corner = (x, y) => new THREE.Vector3(x, y, GAME.dropZoneZ)
         .sub(pivot).applyAxisAngle(new THREE.Vector3(1, 0, 0), recline).add(pivot).project(camera);
@@ -306,13 +308,3 @@ describe('pathCursor', () => {
   });
 });
 
-describe('stood-up layout', () => {
-  it('moves the HUD off past a 130 degree fold and back under 140, holding between', () => {
-    expect(stoodFor(false, foldFor(180))).toBe(false);
-    expect(stoodFor(false, foldFor(90))).toBe(true);
-    expect(stoodFor(false, foldFor(135))).toBe(false);
-    expect(stoodFor(true, foldFor(135))).toBe(true);
-    expect(stoodFor(true, foldFor(150))).toBe(false);
-    expect(stoodFor(true, Number.NaN)).toBe(false);
-  });
-});

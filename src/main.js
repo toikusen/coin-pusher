@@ -475,8 +475,6 @@ async function boot() {
       onScore: handleScore,
       onBoardHit: (kind, strength) => audio.boardHit(kind, strength),
       onError: (message) => ui.error(message),
-      // Stood up, the HUD moves off the upright half (styles.css html[data-stood]).
-      onStood: (stood) => document.documentElement.toggleAttribute('data-stood', stood),
     }).init();
     if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));
     // A null angle (no hinge, or status unknown) reads as flat.
