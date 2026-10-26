@@ -9,6 +9,7 @@ import {
 import { TUNING_DEFAULTS } from './game/physics.js';
 import { CHEATS } from './game/cheats.js';
 import { calculateReward, chestsDue } from './game/rules.js';
+import { loadMissionState, localDay, rewardText, step } from './game/missions.js';
 import { GameAudio } from './audio.js';
 import { tapHaptic, thudHaptic, winHaptic } from './haptics.js';
 import { hasHinge, watchHinge } from './hinge.js';
@@ -75,8 +76,14 @@ const state = {
   combo: 0,
   lastScoreAt: -Infinity,
   auto: false,
-  missionComplete: false,
 };
+let missions = loadMissionState(progress.mission, localDay());
+const MISSION_REWARD_DELAY_MS = 1200;
+// How long after a reward lands the next mission ignores payouts. The rained coins knock a burst off
+// the lip, and counting it finished a 90-point mission in 11 s and a combo of 8 outright.
+const MISSION_SETTLE_MS = 6000;
+let missionPausedUntil = 0;
+ui.setMission(missions);
 
 let game = null;
 let autoTimer = 0;
@@ -90,6 +97,7 @@ function persist() {
     hdriVertical: progress.hdriVertical,
     tuning: progress.tuning,
     geometry: progress.geometry,
+    mission: missions,
   });
 }
 
@@ -124,6 +132,7 @@ function attemptDrop() {
     return;
   }
   state.credits -= 1;
+  trackMission({ type: 'drop' });
   audio.drop();
   tapHaptic();
   renderState();
@@ -234,6 +243,38 @@ function awardGild() {
   winHaptic();
 }
 
+// Mission rewards are the chest prizes' machine events at a smaller size. A gild with nothing on
+// the bed to gild becomes a few rained coins, as awardGild does.
+const MISSION_REWARDS = {
+  rain: (amount) => game?.rainCoins(amount),
+  quake: (amount) => game?.shakeTable(amount),
+  gild: (amount) => { if (!game?.gildCoins(amount)) game?.rainCoins(5); },
+};
+
+// Feeds one game event to the mission chain. A finish is saved at once, so a relaunch can neither
+// lose the level nor pay it twice; the reward follows a beat later so it does not land on top of
+// the chest prize or payout popup that finished the mission. Payouts in the settle window after a
+// reward are the reward's own coins, so they do not count towards the next mission.
+function trackMission(event) {
+  if (event.type === 'payout' && performance.now() < missionPausedUntil) return;
+  const result = step(missions, event, localDay());
+  missions = result.state;
+  if (result.finished) {
+    persist();
+    missionPausedUntil = performance.now() + MISSION_REWARD_DELAY_MS + MISSION_SETTLE_MS;
+    const [reward, daily] = result.rewards;
+    window.setTimeout(() => {
+      for (const prize of result.rewards) MISSION_REWARDS[prize.type](prize.amount);
+      const text = `任務完成！${rewardText(reward)}${daily ? `　今日加碼 ${rewardText(daily)}` : ''}`;
+      ui.notice(text);
+      ui.announce(text);
+      audio.jackpot();
+      winHaptic();
+    }, MISSION_REWARD_DELAY_MS);
+  }
+  ui.setMission(missions);
+}
+
 // One entry per reel symbol, keyed the same as GAME.slotOutcomes. A new slot event is a config
 // entry, a handler here, and nothing else - the reels and the chest are already symbol-agnostic.
 const CHEST_PRIZES = {
@@ -247,6 +288,7 @@ const CHEST_PRIZES = {
 // a pile settle - are announced together, once.
 let chestNotice = { count: 0, timer: 0 };
 function noteChestDrop() {
+  trackMission({ type: 'chest' });
   chestNotice.count += 1;
   if (chestNotice.timer) return;
   chestNotice.timer = window.setTimeout(() => {
@@ -263,6 +305,7 @@ function noteChestDrop() {
 // announcement, because the player watched a chest cross the whole machine and silence reads as
 // a bug.
 function awardChestPrize(win) {
+  trackMission({ type: 'open' });
   const prize = win && CHEST_PRIZES[win];
   if (!prize) {
     ui.announce('寶箱拉霸沒有對齊，這次沒有中獎');
@@ -294,11 +337,12 @@ function flushPayout() {
 
   for (let due = chestsDue(scoreBefore, state.score); due > 0; due -= 1) game?.dropChest(awardChestPrize);
 
-  if (!state.missionComplete && state.score >= GAME.missionTarget) {
-    state.missionComplete = true;
-    ui.missionComplete();
-    audio.jackpot();
-  }
+  trackMission({
+    type: 'payout',
+    score: result.total,
+    premium: coins.filter((coin) => coin.isPremium).length,
+    combo: result.combo,
+  });
   // Only the best score can change here, and localStorage writes are synchronous - during a
   // payout run this is the one thing in the frame that touches disk.
   if (state.bestScore > progress.bestScore) {
@@ -338,9 +382,7 @@ function resetSession() {
   state.credits = GAME.startingCredits;
   state.combo = 0;
   state.lastScoreAt = -Infinity;
-  state.missionComplete = false;
   game?.resetPile();
-  ui.resetMission();
   ui.announce('遊戲已重新開始');
   renderState();
   elements.gameCanvas.focus();
@@ -487,7 +529,9 @@ function bindUI() {
   });
   document.addEventListener('visibilitychange', () => {
     if (!game || elements.onboarding.open) return;
-    if (document.hidden) game.stop();
+    // iOS may end a backgrounded app without warning: this is the last sure moment to save the
+    // mission progress, which a payout batch does not write.
+    if (document.hidden) { persist(); game.stop(); }
     else game.start();
   });
   window.addEventListener('beforeunload', () => game?.destroy(), { once: true });

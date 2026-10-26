@@ -4,7 +4,6 @@
 export const GAME = {
   // Infinity = free play: every credit check and decrement stays valid with no special case.
   startingCredits: Infinity,
-  missionTarget: 25,
   premiumChance: 0.16,
   premiumValue: 3,
   regularValue: 1,

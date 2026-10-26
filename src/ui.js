@@ -1,4 +1,5 @@
 import { GAME, MACHINE_GEOMETRY_LIMITS } from './game/config.js';
+import { DAILY_GOAL, missionAt, missionText } from './game/missions.js';
 
 
 // Slider id -> the setPhysics key it drives, and how many decimals its readout shows.
@@ -62,8 +63,6 @@ export class GameUI {
     this.el.score.textContent = state.score;
     this.el.credits.textContent = Number.isFinite(state.credits) ? state.credits : '∞';
     this.el.bestScore.textContent = state.bestScore;
-    this.el.missionValue.textContent = `推落 ${Math.min(state.score, GAME.missionTarget)} / ${GAME.missionTarget}`;
-    this.el.missionBar.style.width = `${Math.min(100, (state.score / GAME.missionTarget) * 100)}%`;
     const idle = state.credits <= 0 || !state.ready;
     this.el.dropButton.disabled = idle;
     this.el.autoButton.disabled = idle;
@@ -194,10 +193,12 @@ export class GameUI {
     window.setTimeout(() => { this.el.announcer.textContent = message; }, 20);
   }
 
-  missionComplete() {
-    this.el.missionLabel.textContent = '任務完成';
-    this.announce(`任務完成，已推落 ${GAME.missionTarget} 分`);
+  setMission({ level, progress, done, bonus }) {
+    const mission = missionAt(level);
+    this.el.missionLabel.textContent = bonus
+      ? `第 ${level} 關・今日加碼已領`
+      : `第 ${level} 關・今日 ${Math.min(done, DAILY_GOAL)}/${DAILY_GOAL}`;
+    this.el.missionValue.textContent = missionText(mission, progress);
+    this.el.missionBar.style.width = `${Math.min(100, (progress / mission.target) * 100)}%`;
   }
-
-  resetMission() { this.el.missionLabel.textContent = '本局任務'; }
 }

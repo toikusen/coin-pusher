@@ -14,6 +14,8 @@ const defaults = Object.freeze({
   tuning: {},
   // Same deal for the machine's Z layout; machineGeometryFor() clamps whatever comes back.
   geometry: {},
+  // The mission chain (game/missions.js); loadMissionState() cleans whatever comes back.
+  mission: null,
 });
 
 export function loadProgress() {
