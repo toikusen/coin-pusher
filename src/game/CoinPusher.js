@@ -2245,7 +2245,10 @@ export class CoinPusher {
       collisionHeight: scraperGuardHeight,
       collisionY: trayTopY + scraperGuardHeight / 2,
     }));
-    const scraperStrip = this.addStaticBox(BED_WIDTH - 0.35, 0.08, 0.19, 0, 0.73, GAME.scraperZ - 0.02, PALETTE.gold, {
+    // Visual only, so its front face must not stand ahead of the scraper's collider (scraperZ -
+    // 0.08): at 0.19 deep it stood 0.035 proud and a coin pressed against the scraper at full
+    // retreat sat inside it. 0.124 leaves it 0.002 proud - enough to avoid z-fighting the plate.
+    const scraperStrip = this.addStaticBox(BED_WIDTH - 0.35, 0.08, 0.124, 0, 0.73, GAME.scraperZ - 0.02, PALETTE.gold, {
       ...BRASS,
       ...this.surfaces.brushed,
       envMap: this.environmentTexture,
