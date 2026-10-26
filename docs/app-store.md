@@ -46,3 +46,11 @@ Info.plist 已宣告 `ITSAppUsesNonExemptEncryption = NO`，上傳時不會再�
 
 - iPhone 6.9 吋：1320 × 2868（iPhone 18 Pro Max 模擬器）
 - iPad 13 吋：2064 × 2752（iPad Pro 13-inch 模擬器）
+
+重拍方式：Debug 版會在啟動 6 秒後執行 `COIN_PUSHER_EVAL` 裡的腳本，用它按開始並開啟自動投幣，等幾分鐘再截圖。
+
+```sh
+JS="setInterval(()=>{const d=document.getElementById('onboarding');if(d&&d.open){document.getElementById('startButton').click();return;}const a=document.getElementById('autoButton');if(a&&!a.disabled&&a.getAttribute('aria-pressed')!=='true')a.click();},1500);"
+SIMCTL_CHILD_COIN_PUSHER_EVAL="$JS" xcrun simctl launch <udid> io.github.toikusen.nocturne
+xcrun simctl io <udid> screenshot shot.png
+```
