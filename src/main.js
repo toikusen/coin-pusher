@@ -356,6 +356,9 @@ function closeOnboarding() {
   progress.hasSeenOnboarding = true;
   persist();
   elements.onboarding.close();
+  // The start tap is a user gesture: unlock audio and fetch the samples now, so the first coin
+  // already has its recorded sound instead of the synthesised fallback.
+  audio.ensureContext();
   game?.start();
   elements.gameCanvas.focus();
 }

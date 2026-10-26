@@ -470,6 +470,12 @@ export class CoinPusher {
     this.setupParticles();
     this.bindResize();
     await this.resetPile();
+    // Compile every shader and draw one frame behind the onboarding dialog. Left to the first
+    // animate(), shader compilation stalled the tap on 開始挑戰 on an iPhone 13, and the dialog
+    // sat over an empty canvas.
+    await this.renderer.compileAsync(this.scene, this.camera);
+    this.syncCoinInstances();
+    if (this.composer) this.composer.render(); else this.renderer.render(this.scene, this.camera);
     this.timer = new THREE.Timer();
     this.timer.connect(document);
     return this;
