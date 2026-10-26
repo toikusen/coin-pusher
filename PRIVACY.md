@@ -11,7 +11,7 @@
 - App 不使用相機、麥克風、位置、通訊錄或相片。
 - 遊戲中的硬幣不具任何現實價值，無法購買、兌換或提領。
 
-如有任何問題，請聯絡：<CONTACT_EMAIL>
+如有任何問題，請聯絡：tuyucheng0407@gmail.com
 
 ## English
 
@@ -23,4 +23,4 @@ Coin Pusher does not collect, transmit or share any personal data.
 - The app does not access the camera, microphone, location, contacts or photos.
 - In-game coins have no real-world value and cannot be bought, exchanged or withdrawn.
 
-Questions: <CONTACT_EMAIL>
+Questions: tuyucheng0407@gmail.com
