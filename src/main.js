@@ -199,6 +199,7 @@ function awardCoinRain() {
   ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `錢袋 BONUS ×${coins} 硬幣` });
   ui.announce(`錢袋大獎！${coins} 枚硬幣從天而降`);
   audio.jackpot();
+  audio.coinRain();
   winHaptic();
 }
 
