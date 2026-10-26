@@ -19,20 +19,6 @@ export const LOWER_SEED_COUNT = 110;
 // shed a coin while idle on some seeds, so it stays at 2.
 export const LOWER_COIN_FRICTION = 2;
 
-// How full the machine may get before the coin slot holds, and how far it must drain before it
-// opens again. Nothing is ever taken out of the pile to stay under it - coins that vanished from
-// the back of the bed took the pile's pushing force with them, and the bed stopped paying. 280 is
-// above the ~240 the machine settles at once it pays steadily (lower blade 0.9), so in normal play
-// it never triggers; it catches bursts like a money bag landing on a full bed.
-export const MACHINE_FULL_AT = 280;
-export const MACHINE_RESUME_AT = 260;
-
-/** Whether the coin slot is held for a full machine, with hysteresis so it does not chatter. */
-export function machineFullFor(wasFull, liveCoins) {
-  if (liveCoins >= MACHINE_FULL_AT) return true;
-  if (liveCoins <= MACHINE_RESUME_AT) return false;
-  return Boolean(wasFull);
-}
 
 /** Whether a coin has come down off the tray onto the lower bed, where it takes LOWER_COIN_FRICTION. */
 export function onLowerBed(position) {

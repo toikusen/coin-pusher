@@ -48,10 +48,11 @@ describe('coinFallPhase', () => {
     expect(coinFallPhase(coin, { y: 0.02, z: front() - 0.05 })).toBeNull();
   });
 
-  it('latches a coin once it has gone over and below the deck, then pays it at the tray', () => {
+  it('latches a coin once it has gone over and below the deck, then pays it straight away', () => {
     expect(coinFallPhase({ counted: false, falling: false }, { y: NATURAL_FALL_Y - 0.01, z: front() - 0.1 })).toBe('fall');
-    expect(coinFallPhase({ counted: false, falling: true }, { y: NATURAL_FALL_Y - 0.01, z: front() - 0.1 })).toBeNull();
-    expect(coinFallPhase({ counted: false, falling: true }, { y: GAME.trayY - 0.1, z: front() - 0.3 })).toBe('score');
+    // Wherever it is: a coin wedged high in a flooded chute must still pay and leave.
+    expect(coinFallPhase({ counted: false, falling: true }, { y: NATURAL_FALL_Y - 0.01, z: front() - 0.1 })).toBe('score');
+    expect(coinFallPhase({ counted: false, falling: true }, { y: 0.4, z: front() - 1.5 })).toBe('score');
   });
 
   it('does not count a coin that slips below the deck behind the face', () => {

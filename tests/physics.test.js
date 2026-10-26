@@ -22,9 +22,6 @@ import {
   pusherMotionAt,
   onLowerBed,
   lowerBladeReachZ,
-  machineFullFor,
-  MACHINE_FULL_AT,
-  MACHINE_RESUME_AT,
   seedPosition,
   settleChestOnLowerBed,
 } from '../src/game/physics.js';
@@ -760,14 +757,3 @@ describe('launch rails', () => {
 
 });
 
-describe('machineFullFor', () => {
-  // The request this guards: coins vanished from the pile to keep it under a ceiling, and the
-  // bed lost the force to push anything off. A full machine now holds the slot instead.
-  it('holds at the full mark and opens again only once drained to the resume mark', () => {
-    expect(machineFullFor(false, MACHINE_FULL_AT - 1)).toBe(false);
-    expect(machineFullFor(false, MACHINE_FULL_AT)).toBe(true);
-    expect(machineFullFor(true, MACHINE_RESUME_AT + 1)).toBe(true);
-    expect(machineFullFor(true, MACHINE_RESUME_AT)).toBe(false);
-    expect(MACHINE_RESUME_AT).toBeLessThan(MACHINE_FULL_AT);
-  });
-});

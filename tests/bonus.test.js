@@ -153,22 +153,3 @@ describe('chests on the machine', () => {
   });
 });
 
-describe('coin rain on a full machine', () => {
-  it('pauses while the machine is full and finishes the bag once it drains', () => {
-    let sent = 0;
-    const self = {
-      coinRain: null,
-      full: false,
-      sendDownBoard: () => { sent += 1; },
-      rainCoins: CoinPusher.prototype.rainCoins,
-      updateCoinRain: CoinPusher.prototype.updateCoinRain,
-    };
-    self.rainCoins(10);
-    self.full = true;
-    for (let step = 0; step < 600; step += 1) self.updateCoinRain(1 / 60);
-    expect(sent).toBe(0);
-    self.full = false;
-    for (let step = 0; step < 600; step += 1) self.updateCoinRain(1 / 60);
-    expect(sent).toBe(10);
-  });
-});

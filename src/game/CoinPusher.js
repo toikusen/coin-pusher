@@ -31,7 +31,6 @@ import {
   chestDropZ,
   nudgeOverLip,
   onLowerBed,
-  machineFullFor,
   lowerBladeZAt,
   settleChestOnLowerBed,
 } from './physics.js';
@@ -1769,9 +1768,7 @@ export class CoinPusher {
 
   updateCoinRain(delta) {
     const rain = this.coinRain;
-    // A full machine holds the rain as it holds the coin slot (machineFullFor); the rest of the bag
-    // falls once the bed has drained, so the prize is paused, never cut short.
-    if (!rain || this.full) return;
+    if (!rain) return;
     rain.timer -= delta;
     // Bounded by remaining, so a long frame catches up rather than dropping coins on the floor.
     while (rain.remaining > 0 && rain.timer <= 0) {
@@ -2813,11 +2810,11 @@ export class CoinPusher {
 
   /** Settling a new pile, physics behind real time, or a full machine - auto-drop waits (main.js). */
   get busy() {
-    return Boolean(this.settling || this.behind || this.full);
+    return Boolean(this.settling || this.behind);
   }
 
   drop() {
-    if (this.closed || this.settling || this.full) return false;
+    if (this.closed || this.settling) return false;
     return this.launchCoin();
   }
 
@@ -3092,7 +3089,6 @@ export class CoinPusher {
       }
     }
     if (scored.length > 0) this.callbacks.onScore?.(scored, this.elapsed);
-    this.full = machineFullFor(this.full, this.activeCoins.length);
 
     if (!this.quality.reducedMotion) {
       const pulse = 0.75 + 0.2 * Math.sin(this.elapsed * 3);

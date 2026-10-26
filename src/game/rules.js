@@ -25,9 +25,12 @@ export const NATURAL_FALL_Y = -0.3;
 // past the face. The fall check runs before `lost` so one long step cannot skip the payout.
 // ponytail: no hold timer. Headless runs teetered up to 27s with payouts never stalling; add a
 // late nudge only if a parked coin is ever seen damming the pile.
+// A latched coin pays on the next frame rather than at the chute floor: under a flood (1500 coins
+// poured in) coins leaned and stacked in the chute above trayY, never paid, never left, and buried
+// the machine's front. recycleDelay still lets it drop out of sight behind the fascia first.
 export function coinFallPhase(coin, position) {
   if (coin.counted) return null;
-  if (coin.falling && position.y < GAME.trayY) return 'score';
+  if (coin.falling) return 'score';
   if (!coin.falling && position.z < GAME.playfieldFrontZ && position.y < NATURAL_FALL_Y) return 'fall';
   if (position.y < GAME.lostY) return 'lost';
   return null;

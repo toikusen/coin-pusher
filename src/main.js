@@ -118,12 +118,6 @@ function attemptDrop() {
     ui.announce('硬幣用完了，等待機台上的硬幣掉落，或重新開始。');
     return;
   }
-  if (game.full) {
-    audio.error();
-    ui.notice('機台已滿，等硬幣掉落');
-    ui.announce('機台已滿，等硬幣掉落後再投幣。');
-    return;
-  }
   if (!game.drop()) {
     audio.error();
     ui.announce('投幣槽忙碌中，請稍後再試。');
