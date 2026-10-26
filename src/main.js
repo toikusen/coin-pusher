@@ -24,8 +24,8 @@ const quality = getQualityProfile();
 const hingeParam = new URLSearchParams(location.search).get('hinge');
 const useFoldLayout = () => { document.documentElement.dataset.fold = ''; };
 if (hingeParam !== null) useFoldLayout();
-// The tuning panel is a developer tool; release builds leave it out.
-if (!import.meta.env.DEV) document.querySelector('.tune-dock').style.display = 'none';
+// The tuning panel is a developer tool: hidden in the markup so release builds never flash it.
+if (import.meta.env.DEV) document.querySelector('.tune-dock').style.display = '';
 const progress = loadProgress();
 progress.hdriHorizontal = Number.isFinite(progress.hdriHorizontal)
   ? Math.min(180, Math.max(-180, progress.hdriHorizontal))
@@ -542,7 +542,7 @@ async function boot() {
       for (let index = 0; index < count; index += 1) game?.dropChest(awardChestPrize);
     };
     CHEATS.spin = () => game?.spinSlot(awardChestPrize);
-    window.cheats = CHEATS;
+    if (import.meta.env.DEV) window.cheats = CHEATS;
     if (CHEATS.chest > 0) CHEATS.drop(CHEATS.chest);
     state.ready = true;
     ui.ready();

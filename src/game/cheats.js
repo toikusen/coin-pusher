@@ -14,9 +14,10 @@
 //
 // ponytail: a plain mutable object, not a settings UI. It is a debug hatch for two knobs, and the
 // query string plus the console already cover both. Upgrade path: a panel if a tester needs one.
-const params = typeof location === 'undefined'
-  ? new URLSearchParams()
-  : new URLSearchParams(location.search);
+// Release builds ignore the query string, so a shipped app can never boot with a forced result.
+const params = import.meta.env?.DEV && typeof location !== 'undefined'
+  ? new URLSearchParams(location.search)
+  : new URLSearchParams();
 
 export const CHEATS = {
   // null, a symbol from GAME.slotOutcomes, or 'miss'.

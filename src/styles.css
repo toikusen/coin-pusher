@@ -514,6 +514,12 @@ button:disabled { cursor: not-allowed; }
   100% { opacity: 0; transform: translate(-50%, -1rem); }
 }
 
+/* Tablet portrait: the machine takes the whole screen. The field ends up taller than wide, and
+   fovForAspect() opens the vertical fov to keep the bed's full width in frame. */
+@media (orientation: portrait) and (min-width: 47.5rem) and (min-height: 40rem) {
+  .machine { --field-w: min(calc(100vw - 3rem), 60rem); height: calc(100dvh - 3rem); }
+}
+
 /* A floating dock stays below the HUD when the outer gutter cannot fit it. */
 @media (max-width: 64rem) {
   .tune-dock { position: fixed; top: calc(env(safe-area-inset-top) + 7.25rem); left: max(0.75rem, env(safe-area-inset-left)); transform: none; }
