@@ -2,8 +2,10 @@
 
 ## 基本資料
 
-- 名稱：推幣機 Coin Pusher（若名稱已被使用，改用副標題區分）
-- 副標題：3D 釘板推幣・寶箱拉霸
+- 名稱：金幣夜曲：3D推幣機（英文：Coin Nocturne: 3D Coin Pusher）
+- 副標題：釘板・寶箱拉霸・連擊金幣雨
+- Bundle ID：io.github.toikusen.nocturne
+- 主畫面顯示名稱：金幣夜曲
 - 類別：遊戲 > 休閒（次類別：街機）
 - 主要語言：繁體中文
 - 隱私權政策網址：https://github.com/toikusen/coin-pusher/blob/main/PRIVACY.md
@@ -23,7 +25,7 @@
 
 ## 關鍵字（100 字元內，逗號分隔）
 
-推幣機,推幣,硬幣,金幣,街機,休閒,物理,拉霸,寶箱,coin pusher,arcade
+推幣,硬幣,金幣,街機,休閒,物理,拉霸,寶箱,coin pusher,arcade,nocturne
 
 ## App 隱私
 

@@ -1,6 +1,6 @@
 {
-  "appId": "dev.coinpusher.app",
-  "appName": "Coin Pusher",
+  "appId": "io.github.toikusen.nocturne",
+  "appName": "金幣夜曲",
   "webDir": "dist",
   "backgroundColor": "#030710"
 }

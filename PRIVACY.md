@@ -1,10 +1,10 @@
-# 推幣機 Coin Pusher 隱私權政策 / Privacy Policy
+# 金幣夜曲 Coin Nocturne 隱私權政策 / Privacy Policy
 
 最後更新：2026-10-26 · Last updated: 2026-10-26
 
 ## 繁體中文
 
-推幣機（Coin Pusher）不蒐集、不傳送、也不分享任何個人資料。
+金幣夜曲（Coin Nocturne）不蒐集、不傳送、也不分享任何個人資料。
 
 - App 沒有帳號系統、廣告、分析或追蹤工具，遊戲過程不連線到任何伺服器。
 - 最高分、音效開關與教學是否看過等設定只儲存在你的裝置上，不會離開裝置；刪除 App 即一併清除。
@@ -15,7 +15,7 @@
 
 ## English
 
-Coin Pusher does not collect, transmit or share any personal data.
+Coin Nocturne does not collect, transmit or share any personal data.
 
 - There are no accounts, ads, analytics or tracking, and the game never connects to a server.
 - Your best score and settings (sound, tutorial seen) are stored only on your device and are
