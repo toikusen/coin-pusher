@@ -1,5 +1,5 @@
 import { GAME } from '../src/game/config.js';
-import { createCoinBody, lowerBladeZAt, pusherMotionAt, TUNING_DEFAULTS } from '../src/game/physics.js';
+import { createCoinBody, LOWER_BLADE_SINK, lowerBladeZAt, pusherMotionAt, TUNING_DEFAULTS } from '../src/game/physics.js';
 import { PhysicsWorld } from '../src/game/world.js';
 
 export const FIXED_STEP = 1 / 60;
@@ -72,7 +72,10 @@ export function createMachine({ fixedStep = FIXED_STEP } = {}) {
     },
   ], { x: 0, y: 0, z: pusherMotionAt(0, fixedStep).positionZ });
   const blade = world.addKinematicBoxes([
-    { halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: bladeHeight / 2, z: 0.07 }, offset: { x: 0, y: bladeHeight / 2, z: 0 } },
+    {
+      halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: (bladeHeight + LOWER_BLADE_SINK) / 2, z: 0.07 },
+      offset: { x: 0, y: (bladeHeight - LOWER_BLADE_SINK) / 2, z: 0 },
+    },
   ], { x: 0, y: 0, z: lowerBladeZAt(0, fixedStep) });
   const drivePusher = (stepNumber) => {
     const { positionZ } = pusherMotionAt(stepNumber, fixedStep);

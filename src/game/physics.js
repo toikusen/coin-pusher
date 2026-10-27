@@ -34,6 +34,12 @@ export function lowerBladeZAt(stepNumber, fixedStep) {
   return trayFrontAtRetreat() - amplitude + amplitude * Math.sin(stepNumber * fixedStep * GAME.pusherSpeed);
 }
 
+// How far the lower blade's collider reaches below the bed. Flush with the bed, its bottom edge
+// rode up onto a flat coin and trapped it underneath - 18 in four minutes of drop, showing as a
+// row of coin edges under the blade. The bed is fixed and the blade kinematic, so the overlap
+// costs nothing.
+export const LOWER_BLADE_SINK = 0.2;
+
 /** Furthest forward the lower blade's centre ever gets. */
 export function lowerBladeReachZ() {
   return trayFrontAtRetreat() - 2 * GAME.lowerBladeAmplitude;

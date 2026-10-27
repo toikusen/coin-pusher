@@ -12,6 +12,7 @@ import {
   COIN_MASS,
   COIN_PUSHER_FRICTION,
   COIN_RADIUS,
+  LOWER_COIN_FRICTION,
   LOWER_SEED_COUNT,
   lowerSlotsPerLayer,
   TUNING_DEFAULTS,
@@ -133,6 +134,36 @@ describe('bonus chest landing', () => {
     expect(body.position.z).toBe(startZ);
     expect(body.velocity.z).toBe(-3);
   });
+});
+
+describe('lower blade', () => {
+  // Coins rained on the tray for two minutes, as auto-drop does; none may end up pinned under the
+  // blade, which with a collider flush to the bed trapped several a minute.
+  it('never rides up onto a coin on the lower bed', () => {
+    const { world, blade } = testMachine();
+    const halfDepth = blade.collider.halfExtents().z;
+    const coins = [];
+    let seed = 1;
+    const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    let trapped = 0;
+    for (let step = 0; step < 120 * 60; step += 1) {
+      if (step % 18 === 0) coins.push({ body: spawnCoin(world, { x: (random() * 2 - 1) * 3.5, y: 1.6, z: GAME.dropZoneZ }) });
+      world.stepOnce();
+      const bladeZ = blade.position.z;
+      for (const coin of coins) {
+        const { y, z } = coin.body.position;
+        if (!coin.lower && onLowerBed(coin.body.position)) {
+          coin.lower = true;
+          coin.body.collider.setFriction(LOWER_COIN_FRICTION);
+        }
+        // At least 0.1 of the coin under the blade's footprint while it lies on the bed.
+        const under = y < 0.1 && z > bladeZ - halfDepth - COIN_RADIUS + 0.1 && z < bladeZ + halfDepth + COIN_RADIUS;
+        coin.underFor = under ? (coin.underFor ?? 0) + FIXED_STEP : 0;
+        if (coin.underFor > 1 && !coin.counted) { coin.counted = true; trapped += 1; }
+      }
+    }
+    expect(trapped).toBe(0);
+  }, 60000);
 });
 
 describe('payout lip nudge', () => {
@@ -664,7 +695,9 @@ describe('tray drainage', () => {
     expect.soft(idlePaidOut).toBe(0);
     // The seed is three layers deep with its front row hanging at the lip on purpose, so the first
     // coin may tip a couple of those off. What must not happen is it cashing out the pile.
-    expect.soft(firstDropPaidOut).toBeLessThanOrEqual(3);
+    // 3 -> 5 with LOWER_BLADE_SINK: coins no longer vanish under the blade, so the lower pile is
+    // that much fuller and seed 2024's first coin tips 5 of its front row.
+    expect.soft(firstDropPaidOut).toBeLessThanOrEqual(5);
     expect.soft(dropCount).toBeGreaterThan(25);
     // Measured over these five seeds with Rapier, the 0.27 coin and the deep pile: 22-38 paid from
     // 68 drops, a fill phase included, while the lip still threw coins off; 17-31 now that a

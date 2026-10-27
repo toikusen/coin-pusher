@@ -33,6 +33,7 @@ import {
   chestDropZ,
   nudgeOverLip,
   onLowerBed,
+  LOWER_BLADE_SINK,
   lowerBladeZAt,
   settleChestOnLowerBed,
 } from './physics.js';
@@ -2387,8 +2388,8 @@ export class CoinPusher {
     this.pusherDeckShape = pusherBody.colliders[0];
     const bladeBody = this.world.addKinematicBoxes([
       {
-        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: bladeHeight / 2, z: 0.07 },
-        offset: { x: 0, y: bladeHeight / 2, z: 0 },
+        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: (bladeHeight + LOWER_BLADE_SINK) / 2, z: 0.07 },
+        offset: { x: 0, y: (bladeHeight - LOWER_BLADE_SINK) / 2, z: 0 },
       },
     ], { x: 0, y: 0, z: lowerBladeZAt(this.world.stepNumber, this.quality.physicsStep) });
     // Targeted before each step from the analytic strokes, so neither ever drifts.
