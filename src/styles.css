@@ -621,9 +621,10 @@ html[data-fold] .stats, html[data-fold] .mission { grid-column: 1; grid-row: 1; 
 html[data-fold] .stats { justify-self: start; flex-direction: column; margin-left: max(1rem, env(safe-area-inset-left)); }
 html[data-fold] .mission {
   justify-self: end;
-  width: 8.5rem;
+  /* The level label (第 N 關・今日 d/3) takes a row of its own; it outgrew sharing one with 最高. */
+  width: 10.5rem;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas: "label best" "value value" "track track";
+  grid-template-areas: "label label" "value value" "track best";
   row-gap: 0.375rem;
   margin-right: max(1rem, env(safe-area-inset-right));
   padding: 0.5rem 0.625rem;
