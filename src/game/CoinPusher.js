@@ -220,6 +220,11 @@ export function foldFor(hingeDegrees) {
 const SILL_HEIGHT = PIN_BOARD.bottom - 0.1;
 // How high a coin stack can stand under the board's sill before the chest guard stops it.
 const CHEST_GUARD_COIN_CLEARANCE = 0.35;
+// Coins are drawn this much thicker than they collide. The physics wants a thin coin (0.05) so the
+// pile shingles and hangs over the lip, but coin.glb is modelled at thickness/diameter 0.195 and
+// squashed to 0.07 its rim bevel turned into a hairline: at the game camera they read as paper.
+// 1.5 brings the rim back; stacked coins then overlap by about 0.025, which the shingling hides.
+const COIN_DRAW_THICKEN = 1.5;
 // How long a paid chest stays in sight before it is retired, in case it lodges in the chute.
 const CHEST_RETIRE_SECONDS = 1.5;
 // How long a chest may sit past the lip without falling before it pays anyway.
@@ -663,7 +668,7 @@ export class CoinPusher {
     this.world.setGravity({ x: 0, y: -24, z: -this.tuning.tilt });
     this.world.setIterations(this.tuning.solverIterations);
     this.world.setFriction(this.tuning);
-    const scaleY = this.tuning.thickness / COIN_HEIGHT;
+    const scaleY = (this.tuning.thickness / COIN_HEIGHT) * COIN_DRAW_THICKEN;
     // In-flight coins too: resetPile returns them to the pool, and an untuned one would be reused.
     for (const coin of [...this.activeCoins, ...this.coinPool, ...this.launching.map((shot) => shot.coin)]) {
       applyCoinTuning(coin.body, this.tuning, resizeShape);
@@ -2766,7 +2771,7 @@ export class CoinPusher {
     // draws it. The geometry is shared and baked at COIN_HEIGHT, so thickness rides on the scale.
     const mesh = new THREE.Object3D();
     mesh.material = this.coinMaterials[isPremium ? 'premium' : 'regular'];
-    mesh.scale.y = this.tuning.thickness / COIN_HEIGHT;
+    mesh.scale.y = (this.tuning.thickness / COIN_HEIGHT) * COIN_DRAW_THICKEN;
     const body = createCoinBody(this.world, this.tuning);
     const coin = {
       mesh,
