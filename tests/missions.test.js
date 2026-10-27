@@ -14,7 +14,7 @@ describe('missionAt', () => {
 
   it('stops getting harder once the rotation loops', () => {
     expect(missionAt(4)).toBe(missionAt(13));
-    expect(missionAt(1000).target).toBeLessThanOrEqual(150);
+    expect(missionAt(1000).target).toBeLessThanOrEqual(300);
   });
 });
 

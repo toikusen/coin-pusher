@@ -33,20 +33,21 @@ const INTRO = [
 
 // Then this loops for good. Ordered so the same kind never comes twice in a row, wrap included,
 // and the targets stop growing: a mission should take a minute or two however long you have played.
-// Sized against a settled machine on auto-drop (Chrome, 2026-10-27): about 87 points, 66 coins and
-// 10 gold coins a minute, a chest won every ~35 s and one opened every one to two minutes.
+// Sized against a 27-minute auto-drop run on the iPhone simulator (2026-10-27), rewards included:
+// about 220 points a minute, combos of 8 within 15 s, chests won every ~25 s and opened every
+// ~30 s once the queue is running. The first set of targets, half these, took 36 s a mission.
 // ponytail: a fixed rotation, not a random draw - nothing to persist but the level. Upgrade path:
 // seeded picks per level if players say it feels repetitive.
 const ROTATION = [
-  { kind: 'score', target: 90, reward: { type: 'rain', amount: 8 } },
-  { kind: 'premium', target: 10, reward: { type: 'rain', amount: 8 } },
-  { kind: 'combo', target: 8, reward: { type: 'rain', amount: 10 } },
-  { kind: 'chest', target: 2, reward: { type: 'rain', amount: 10 } },
-  { kind: 'score', target: 150, reward: { type: 'quake', amount: 0.8 } },
-  { kind: 'premium', target: 15, reward: { type: 'gild', amount: 0.15 } },
-  { kind: 'open', target: 1, reward: { type: 'rain', amount: 12 } },
-  { kind: 'score', target: 120, reward: { type: 'gild', amount: 0.15 } },
-  { kind: 'open', target: 2, reward: { type: 'quake', amount: 1 } },
+  { kind: 'score', target: 180, reward: { type: 'rain', amount: 8 } },
+  { kind: 'premium', target: 20, reward: { type: 'rain', amount: 8 } },
+  { kind: 'combo', target: 10, reward: { type: 'rain', amount: 10 } },
+  { kind: 'chest', target: 4, reward: { type: 'rain', amount: 10 } },
+  { kind: 'score', target: 300, reward: { type: 'quake', amount: 0.8 } },
+  { kind: 'premium', target: 30, reward: { type: 'gild', amount: 0.15 } },
+  { kind: 'open', target: 2, reward: { type: 'rain', amount: 12 } },
+  { kind: 'score', target: 240, reward: { type: 'gild', amount: 0.15 } },
+  { kind: 'open', target: 3, reward: { type: 'quake', amount: 1 } },
 ];
 
 export const DAILY_GOAL = 3;
