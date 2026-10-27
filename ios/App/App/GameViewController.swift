@@ -7,6 +7,9 @@ class GameViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
         webView?.scrollView.bounces = false
+        // A game left on auto-drop gets no touches, so iOS would dim and lock the screen mid-play.
+        // Applies only while the app is in front; iOS restores auto-lock everywhere else.
+        UIApplication.shared.isIdleTimerDisabled = true
 
         let hinge = HingePlugin()
         bridge?.registerPluginInstance(hinge)
