@@ -55,11 +55,16 @@ GLOW_STRENGTH = {"chest": 1.2, "slot": 0.6}
 CHEST_BOX = (1.15, 0.847, 0.964)   # build_chest.py
 SLOT_WIDTH = 2.24                  # GAME.slotWidth
 SLOT_MAX_HEIGHT = 1.24             # build_slot.py
-# The reel window inside the gold frame, as fractions of the fitted model's width and height,
-# measured off an orthographic front render of this one generation. Regenerate the slot and these
-# have to be measured again.
-SLOT_WINDOW_X = (0.127, 0.875)
-SLOT_WINDOW_Z = (0.157, 0.785)
+# The slot is fitted onto this box, not scaled by width alone: the 2026-10-27 generation came out
+# 0.48 tall per unit wide, and at full height its crown left the stood-up foldable frame
+# (tests/slot.test.js). These are the previous generation's fitted depth and height, which the
+# camera framing was tuned on, so the reel windows land about where they did before.
+SLOT_BOX = (SLOT_WIDTH, 0.574, 0.795)
+# The reel glass inside the gold frames, as fractions of the fitted model's width and height,
+# read off an orthographic front render of this one generation (the three windows and the gold
+# mullions between them). Regenerate the slot and these have to be measured again.
+SLOT_WINDOW_X = (0.185, 0.815)
+SLOT_WINDOW_Z = (0.265, 0.649)
 
 
 def source_image(socket):
@@ -194,7 +199,10 @@ def add_reel_pane(model):
         raise SystemExit("no window surface behind the reel window's centre")
     surface = location[1]  # +y is the player's side
     # box() takes (world x, world y, local z); local z = -blender y.
-    box("slot_reel_glass", standard_materials()["reel_glass"], x, z, (-surface - 0.004, -surface))
+    # 0.002 behind the surface the ray hit: on the 2026-10-27 generation that surface is the glass's
+    # own bulge, the frontmost point of the whole model, and a pane on it stood proud of the frame.
+    # The readout still lands 0.008 in front of the glass.
+    box("slot_reel_glass", standard_materials()["reel_glass"], x, z, (-surface + 0.002, -surface + 0.006))
 
 
 def fit():
@@ -203,7 +211,7 @@ def fit():
         raise SystemExit(f"unknown kind {kind!r}: chest or slot")
     model = import_single_mesh(source)
     model.name = f"{kind}_tripo"
-    fit_box(model, CHEST_BOX if kind == "chest" else (SLOT_WIDTH, None, None))
+    fit_box(model, CHEST_BOX if kind == "chest" else SLOT_BOX)
     grade_textures(model)
     add_glow(model, GLOW_STRENGTH[kind])
     if kind == "slot":
