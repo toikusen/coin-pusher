@@ -51,6 +51,13 @@ const copy4 = (to, { x, y, z, w }) => { to.x = x; to.y = y; to.z = z; to.w = w; 
  * or blended between the last two (`lerpPose`); writes go through the setters, which also reset
  * the blend so a teleport never smears across a frame.
  */
+// Rapier collision groups, membership in the high 16 bits and filter in the low 16. Everything
+// defaults to all bits; CHEST_ONLY colliders filter on a bit coins are not members of, so only the
+// chest - a default body - ever touches them.
+const CHEST_ONLY_BIT = 0x0002;
+const COIN_GROUPS = (((0xffff & ~CHEST_ONLY_BIT) << 16) | 0xffff) >>> 0;
+export const CHEST_ONLY_GROUPS = ((CHEST_ONLY_BIT << 16) | CHEST_ONLY_BIT) >>> 0;
+
 export class PhysicsBody {
   constructor(world, rigidBody, collider, { material, role = null }) {
     this.world = world;
@@ -174,6 +181,7 @@ export class PhysicsWorld {
       .setRestitution(0)
       .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
     if (options.role || options.events) colliderDesc.setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    if (options.groups !== undefined) colliderDesc.setCollisionGroups(options.groups);
     const collider = this.world.createCollider(colliderDesc, rb);
     const body = new PhysicsBody(this, rb, collider, options);
     this.bodies.add(body);
@@ -182,9 +190,9 @@ export class PhysicsWorld {
   }
 
   /** A fixed box, `role` tagging it for contact callbacks. */
-  addStaticBox(halfExtents, position, { material = 'ground', role = null } = {}) {
+  addStaticBox(halfExtents, position, { material = 'ground', role = null, groups } = {}) {
     const desc = RAPIER.RigidBodyDesc.fixed().setTranslation(position.x, position.y, position.z);
-    return this.#add(desc, RAPIER.ColliderDesc.cuboid(halfExtents.x, halfExtents.y, halfExtents.z), { material, role });
+    return this.#add(desc, RAPIER.ColliderDesc.cuboid(halfExtents.x, halfExtents.y, halfExtents.z), { material, role, groups });
   }
 
   /** A kinematic body of several boxes, each `{ halfExtents, offset }` in body space. */
@@ -214,7 +222,7 @@ export class PhysicsWorld {
       .setLinearDamping(linearDamping)
       .setAngularDamping(angularDamping)
       .setEnabled(false);
-    const body = this.#add(desc, RAPIER.ColliderDesc.cylinder(thickness / 2, radius).setMass(mass), { material: 'coin', events });
+    const body = this.#add(desc, RAPIER.ColliderDesc.cylinder(thickness / 2, radius).setMass(mass), { material: 'coin', events, groups: COIN_GROUPS });
     body.radius = radius;
     return body;
   }

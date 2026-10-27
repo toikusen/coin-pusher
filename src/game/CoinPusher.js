@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { clearPinsAround, pinLayout, simulateDrop } from './pachinko.js';
-import { initPhysics, physicsBuild, PhysicsWorld } from './world.js';
+import { CHEST_ONLY_GROUPS, initPhysics, physicsBuild, PhysicsWorld } from './world.js';
 import { boardThemeFor } from './themes/index.js';
 import { drawReelStrip, REEL_IMAGE_FILES, trimmedArt } from './themes/nocturneReels.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
@@ -16,6 +16,7 @@ import {
   coinPhase,
   coinFallPhase,
   gildTargets,
+  NATURAL_FALL_Y,
   quakeKick,
   rollSlotResult,
   slotWin,
@@ -28,6 +29,7 @@ import {
   createCoinBody,
   pusherMotionAt,
   seedPosition,
+  BOARD_SILL_FRONT,
   chestDropZ,
   nudgeOverLip,
   onLowerBed,
@@ -216,6 +218,10 @@ export function foldFor(hingeDegrees) {
 
 // The pin board's mint sill, which the stood-up view puts on the fold (see buildDropper).
 const SILL_HEIGHT = PIN_BOARD.bottom - 0.1;
+// How high a coin stack can stand under the board's sill before the chest guard stops it.
+const CHEST_GUARD_COIN_CLEARANCE = 0.35;
+// How long a paid chest stays in sight before it is retired, in case it lodges in the chute.
+const CHEST_RETIRE_SECONDS = 1.5;
 
 /**
  * Vertical view offset, in canvas pixels, that carries the sill from sillNdc (where the camera puts
@@ -1857,14 +1863,20 @@ export class CoinPusher {
         // balanced on the lip - eight times a coin's friction, 0.9 damping - is exactly what the
         // pile cannot shift: its centre of mass is still over the bed, so it does not even tip.
         nudgeOverLip(body);
-      } else if (phase === 'score') {
+      } else if (phase === 'score' || (drop.falling && !drop.counted && body.position.y < NATURAL_FALL_Y)) {
+        // Over the lip and below the deck pays, as it does for a coin (coinFallPhase). Waiting for
+        // trayY alone left a chest parked on the chute's side at y -1.03: never paid, never
+        // retired, holding one of the chestsOnMachine slots while every later chest queued.
         drop.counted = true;
+        drop.retireIn = CHEST_RETIRE_SECONDS;
         const { x, z } = body.position;
         this.emitParticles(x, GAME.trayY, z, 18, true);
         this.spinSlot(drop.onWin);
       }
-      // Paid or not, it leaves the world down the chute rather than blinking out at the tray line.
-      if (phase === 'lost' || body.position.y < GAME.lostY) this.retireChest(index);
+      if (drop.counted) drop.retireIn -= delta;
+      // Paid or not, it leaves the world down the chute rather than blinking out at the tray line -
+      // or, if it lodges on the way, a moment after it paid.
+      if (phase === 'lost' || body.position.y < GAME.lostY || drop.retireIn <= 0) this.retireChest(index);
     }
 
     const spin = this.slotSpin;
@@ -2260,6 +2272,19 @@ export class CoinPusher {
       envMap: this.environmentTexture,
       visualOnly: true,
     });
+    // The board's sill hangs over the tray at coin height plus a little, so a chest - near three
+    // coins tall - would ride under it into the pin board. This wall fills the sill's footprint
+    // down to just above a small coin stack, and only chests collide with it: a pushed-back chest
+    // stops at the sill's face, and the retreating deck slides it off its front edge instead.
+    // ponytail: fixed, so it follows the sill in the flat pose only - a foldable reclines the board
+    // and the sill moves; add the guard to the board rig if a chest is ever seen clipping there.
+    const guardBottom = trayTopY + CHEST_GUARD_COIN_CLEARANCE;
+    const guardTop = SILL_HEIGHT + 0.1;
+    this.world.addStaticBox(
+      { x: BED_WIDTH / 2, y: (guardTop - guardBottom) / 2, z: BOARD_SILL_FRONT / 2 },
+      { x: 0, y: (guardTop + guardBottom) / 2, z: GAME.dropZoneZ - BOARD_SILL_FRONT / 2 },
+      { groups: CHEST_ONLY_GROUPS },
+    );
     this.scraperStrip = scraperStrip;
 
     // Moving upper tray: coins land here, meet the fixed scraper, then spill to the lower bed.

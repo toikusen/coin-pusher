@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
-import { initPhysics } from '../src/game/world.js';
+import { CHEST_ONLY_GROUPS, initPhysics } from '../src/game/world.js';
 import { BED_WIDTH, GLASS_X, FIXED_STEP, createMachine, createWorld, spawnCoin, spawnChest } from './machine.js';
 import { GAME } from '../src/game/config.js';
 import { coinFallPhase, landingXFor, launchSpeedFor } from '../src/game/rules.js';
@@ -16,6 +16,7 @@ import {
   lowerSlotsPerLayer,
   TUNING_DEFAULTS,
   applyCoinTuning,
+  BOARD_SILL_FRONT,
   chestDropZ,
   createCoinBody,
   nudgeOverLip,
@@ -437,13 +438,24 @@ describe('sweep coverage', () => {
   // The chest starts at the back of the tray so it has the whole machine to travel. Two things
   // bound that: the scraper's own face, and how far back the moving deck reaches at its forward
   // extreme - past that the chest would drop into the gap behind the tray.
-  it('drops the chest against the scraper with deck still under it', () => {
+  it('drops the chest in front of the board sill with deck still under it', () => {
     const halfDepth = GAME.chestWidth * 0.74 / 2;
     const back = chestDropZ(halfDepth) + halfDepth;
-    expect(back).toBeLessThan(GAME.scraperZ - 0.08);
+    expect(back).toBeLessThan(GAME.dropZoneZ - BOARD_SILL_FRONT);
     const deckDepth = GAME.pusherDepth + GAME.pusherRearExtension;
     const deckRear = GAME.pusherOriginZ - GAME.pusherAmplitude + GAME.pusherRearExtension / 2 + deckDepth / 2;
     expect(back).toBeLessThan(deckRear);
+  });
+
+  // The wall under the board's sill: a chest lands on it, a coin falls straight through.
+  it('lets only chests touch a chest-only collider', () => {
+    const world = createWorld({ tilt: 0 });
+    world.addStaticBox({ x: 5, y: 0.1, z: 5 }, { x: 0, y: 0, z: 0 }, { groups: CHEST_ONLY_GROUPS });
+    const coin = spawnCoin(world, { x: -2, y: 1, z: 0 });
+    const chest = spawnChest(world, { x: 2, y: 1, z: 0 });
+    for (let step = 0; step < 120; step += 1) world.step(FIXED_STEP);
+    expect(coin.position.y).toBeLessThan(-1);
+    expect(chest.position.y).toBeGreaterThan(0);
   });
 
   it('makes the bonus chest resist a shove at least eighteen times more than a coin', () => {

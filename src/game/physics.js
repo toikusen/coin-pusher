@@ -47,12 +47,15 @@ export const COIN_PUSHER_FRICTION = 0.8;
 export const COIN_LINEAR_DAMPING = 0.12;
 export const COIN_ANGULAR_DAMPING = 0.58;
 
-// Where a chest is dropped in: hard against the scraper's front face, the deepest start that still
-// clears it, so the chest rides the full length of the machine before it can pay. 0.08 is the
-// scraper's half-thickness. The tray deck reaches under the scraper at every point of the stroke -
-// pusherRearExtension guards it - so there is always deck beneath this.
+// The pin board's sill hangs over the tray: its front face is BOARD_SILL_FRONT behind dropZoneZ and
+// its underside BOARD_SILL_CLEARANCE above the deck. A coin slides under it; a chest is twice that
+// tall, so CoinPusher puts a chest-only wall there (CHEST_GUARD) and the chest never goes under.
+export const BOARD_SILL_FRONT = 0.22;
+// Where a chest is dropped in: just in front of the board's sill, the deepest start that does not
+// put it inside the board. It used to go against the scraper, 1 m further back - under the board,
+// so a chest came down through the sill and rode the tray half buried in the pin board.
 export function chestDropZ(halfDepth) {
-  return GAME.scraperZ - 0.08 - halfDepth - 0.06;
+  return GAME.dropZoneZ - BOARD_SILL_FRONT - halfDepth - 0.06;
 }
 
 // Catch the chest's first lower-bed landing and absorb that impact, so it thuds instead of
