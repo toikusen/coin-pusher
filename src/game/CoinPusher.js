@@ -225,6 +225,8 @@ const CHEST_GUARD_COIN_CLEARANCE = 0.35;
 // squashed to 0.07 its rim bevel turned into a hairline: at the game camera they read as paper.
 // 1.5 brings the rim back; stacked coins then overlap by about 0.025, which the shingling hides.
 const COIN_DRAW_THICKEN = 1.5;
+// How long a coin may sit stranded behind the blade, under the tray, before it is recycled.
+const STRANDED_SECONDS = 1;
 // How long a paid chest stays in sight before it is retired, in case it lodges in the chute.
 const CHEST_RETIRE_SECONDS = 1.5;
 // How long a chest may sit past the lip without falling before it pays anyway.
@@ -2400,6 +2402,7 @@ export class CoinPusher {
     this.pusherBody = pusherBody;
     this.bladeMesh = bladeMesh;
     this.bladeBody = bladeBody;
+    this.bladeHalfDepth = bladeBody.collider.halfExtents().z;
     this.buildDropper();
     // Every geometry-driven part now exists, so a saved layout can be applied in one pass
     // instead of being threaded through the build.
@@ -2864,6 +2867,18 @@ export class CoinPusher {
     return this.launchCoin();
   }
 
+  // A coin behind the lower blade and under the tray can never be pushed out again - the blade
+  // only ever shoves forward - so it sits there, peeking out under the tray's lip. Some get there
+  // (24 in four minutes of auto-drop, mostly off the tray's left half), so rather than chase every
+  // way in, one that has stayed there for STRANDED_SECONDS goes back to the pool, unpaid.
+  strandedUnderTray(coin, delta) {
+    const { y, z } = coin.body.position;
+    const behindBlade = z > this.bladeBody.position.z + this.bladeHalfDepth + COIN_RADIUS;
+    const underTray = y < GAME.upperTrayY - GAME.upperTrayHeight / 2;
+    coin.strandedFor = behindBlade && underTray ? (coin.strandedFor ?? 0) + delta : 0;
+    return coin.strandedFor > STRANDED_SECONDS;
+  }
+
   // A coin that has come down off the tray onto the lower bed takes the bed's high coin-on-coin
   // grip (physics.js LOWER_COIN_FRICTION); the tray keeps the low one it needs to drain. Coins
   // only ever travel down, so this is one-way until the coin is recycled.
@@ -2903,6 +2918,7 @@ export class CoinPusher {
     coin.body.setEnabled(false);
     coin.mesh.visible = false;
     coin.falling = false;
+    coin.strandedFor = 0;
     this.coinPool.push(coin);
   }
 
@@ -3130,7 +3146,7 @@ export class CoinPusher {
         scored.push(coin);
         // At the slot's mouth: the coin itself is already behind the fascia by now.
         this.emitParticles(coin.body.position.x, FASCIA_TOP_Y, chuteZ() + 1.1 - FASCIA_GAP, coin.isPremium ? 12 : 7, coin.isPremium);
-      } else if (phaseResult === 'lost') {
+      } else if (phaseResult === 'lost' || this.strandedUnderTray(coin, delta)) {
         this.recycleCoin(index);
       }
     }
