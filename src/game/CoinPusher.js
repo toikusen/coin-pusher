@@ -222,6 +222,8 @@ const SILL_HEIGHT = PIN_BOARD.bottom - 0.1;
 const CHEST_GUARD_COIN_CLEARANCE = 0.35;
 // How long a paid chest stays in sight before it is retired, in case it lodges in the chute.
 const CHEST_RETIRE_SECONDS = 1.5;
+// How long a chest may sit past the lip without falling before it pays anyway.
+const CHEST_WEDGE_SECONDS = 2;
 
 /**
  * Vertical view offset, in canvas pixels, that carries the sill from sillNdc (where the camera puts
@@ -1863,10 +1865,15 @@ export class CoinPusher {
         // balanced on the lip - eight times a coin's friction, 0.9 damping - is exactly what the
         // pile cannot shift: its centre of mass is still over the bed, so it does not even tip.
         nudgeOverLip(body);
-      } else if (phase === 'score' || (drop.falling && !drop.counted && body.position.y < NATURAL_FALL_Y)) {
-        // Over the lip and below the deck pays, as it does for a coin (coinFallPhase). Waiting for
-        // trayY alone left a chest parked on the chute's side at y -1.03: never paid, never
-        // retired, holding one of the chestsOnMachine slots while every later chest queued.
+      }
+      // coinPhase keeps answering 'cross' for a chest wedged past the lip, so this counts every frame.
+      if (drop.falling && !drop.counted) drop.fallingFor = (drop.fallingFor ?? 0) + delta;
+      // Over the lip pays once it is below the deck, as it does for a coin (coinFallPhase), or once
+      // it has been over for CHEST_WEDGE_SECONDS. Waiting for trayY alone left chests wedged on the
+      // chute's side (y -1.03) and between the lip and the fascia: never paid, never retired, each
+      // holding one of the chestsOnMachine slots while every later chest queued behind them.
+      if (!drop.counted && (phase === 'score' || (drop.falling
+        && (body.position.y < NATURAL_FALL_Y || drop.fallingFor > CHEST_WEDGE_SECONDS)))) {
         drop.counted = true;
         drop.retireIn = CHEST_RETIRE_SECONDS;
         const { x, z } = body.position;
