@@ -53,6 +53,13 @@ export function collectUI() {
   return Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 }
 
+// Restarts a one-shot CSS animation: the class comes off, a reflow forgets it, and it goes back on.
+function replay(element, className) {
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
+}
+
 export class GameUI {
   constructor(elements) {
     this.el = elements;
@@ -60,7 +67,10 @@ export class GameUI {
   }
 
   update(state) {
-    this.el.score.textContent = state.score;
+    if (String(state.score) !== this.el.score.textContent) {
+      if (state.score > Number(this.el.score.textContent)) replay(this.el.score, 'is-bumped');
+      this.el.score.textContent = state.score;
+    }
     this.el.credits.textContent = Number.isFinite(state.credits) ? state.credits : '∞';
     this.el.bestScore.textContent = state.bestScore;
     const idle = state.credits <= 0 || !state.ready;
@@ -192,6 +202,8 @@ export class GameUI {
     this.el.announcer.textContent = '';
     window.setTimeout(() => { this.el.announcer.textContent = message; }, 20);
   }
+
+  flashMission() { replay(this.el.missionBar.closest('.mission'), 'is-complete'); }
 
   setMission({ level, progress, done, bonus }) {
     const mission = missionAt(level);

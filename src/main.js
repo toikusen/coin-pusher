@@ -17,6 +17,8 @@ import { loadProgress, saveProgress } from './storage.js';
 import { collectUI, GameUI, GEOMETRY_CONTROLS, RESET_CONFIRM_MS, resetConfirmed, TUNING_CONTROLS } from './ui.js';
 
 const elements = collectUI();
+// WebKit on iOS only applies :active to a touched button when the page listens for touches.
+document.addEventListener('touchstart', () => {}, { passive: true });
 const ui = new GameUI(elements);
 const quality = getQualityProfile();
 // The app shell reports the hinge (src/hinge.js). In a browser there is none to read, so
@@ -114,7 +116,9 @@ function stopAuto() {
   ui.setAuto(false);
 }
 
-function attemptDrop() {
+// `quiet` is a held 投幣 button repeating: a busy slot then just skips the beat, since holding the
+// button is not a mistake worth an error sound.
+function attemptDrop({ quiet = false } = {}) {
   if (!state.ready || !game) return;
   // Phone nearly shut: the machine is paused, so a press (or the auto timer) quietly does nothing
   // rather than charging a coin or sounding the jammed-slot error.
@@ -127,6 +131,7 @@ function attemptDrop() {
     return;
   }
   if (!game.drop()) {
+    if (quiet) return;
     audio.error();
     ui.announce('投幣槽忙碌中，請稍後再試。');
     return;
@@ -136,6 +141,24 @@ function attemptDrop() {
   audio.drop();
   tapHaptic();
   renderState();
+}
+
+// Held 投幣: one drop per HOLD_REPEAT_MS, about four times auto-drop - fast enough to feel like a
+// stream, slow enough that the pin board still reads coin by coin.
+const HOLD_REPEAT_MS = 300;
+let holdTimer = 0;
+function startHold(event) {
+  if (event.button > 0) return;
+  elements.dropButton.setPointerCapture?.(event.pointerId);
+  stopHold();
+  attemptDrop();
+  holdTimer = window.setInterval(() => attemptDrop({ quiet: true }), HOLD_REPEAT_MS);
+  elements.dropButton.classList.add('is-holding');
+}
+function stopHold() {
+  window.clearInterval(holdTimer);
+  holdTimer = 0;
+  elements.dropButton.classList.remove('is-holding');
 }
 
 function toggleAuto() {
@@ -268,6 +291,7 @@ function trackMission(event) {
       const text = `任務完成！${rewardText(reward)}${daily ? `　今日加碼 ${rewardText(daily)}` : ''}`;
       ui.notice(text);
       ui.announce(text);
+      ui.flashMission();
       audio.jackpot();
       winHaptic();
     }, MISSION_REWARD_DELAY_MS);
@@ -490,7 +514,15 @@ function bindUI() {
     ui.announce('物理參數已回到預設值');
   });
 
-  elements.dropButton.addEventListener('click', attemptDrop);
+  // Pressing 投幣 drops at once and keeps dropping while held. A keyboard activation of the button
+  // still arrives as a click, with no pointer behind it (detail 0).
+  elements.dropButton.addEventListener('pointerdown', startHold);
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    elements.dropButton.addEventListener(type, stopHold);
+  }
+  elements.dropButton.addEventListener('click', (event) => {
+    if (event.detail === 0) attemptDrop();
+  });
   elements.autoButton.addEventListener('click', toggleAuto);
   elements.soundButton.addEventListener('click', () => {
     audio.setEnabled(!audio.enabled);
@@ -525,7 +557,7 @@ function bindUI() {
   elements.gameCanvas.addEventListener('keydown', (event) => {
     if (event.key === ' ' || event.key.toLowerCase() === 'f') {
       event.preventDefault();
-      if (!event.repeat) attemptDrop();
+      attemptDrop({ quiet: event.repeat });
     } else if (event.key.toLowerCase() === 'r') {
       event.preventDefault();
       if (!event.repeat) toggleAuto();
