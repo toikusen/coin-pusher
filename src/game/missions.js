@@ -8,7 +8,7 @@
 //   score    points paid by coins going over the lip (combo bonus included, mission rewards not)
 //   premium  gold coins paid
 //   combo    the longest combo reached during the mission
-//   chest    chests dropped into the machine
+//   chest    chests won (every chestScoreStep points), whether they drop at once or queue
 //   open     chests whose slot has finished spinning, whatever it showed
 //
 // Rewards are machine events from the chest prizes, scaled down: rain (coins), quake (seconds),
@@ -19,7 +19,7 @@ const KIND_TEXT = {
   score: '取得分數',
   premium: '推落金幣',
   combo: '連擊',
-  chest: '寶箱掉入機台',
+  chest: '獲得寶箱',
   open: '開寶箱',
 };
 
@@ -34,7 +34,7 @@ const INTRO = [
 // Then this loops for good. Ordered so the same kind never comes twice in a row, wrap included,
 // and the targets stop growing: a mission should take a minute or two however long you have played.
 // Sized against a settled machine on auto-drop (Chrome, 2026-10-27): about 87 points, 66 coins and
-// 10 gold coins a minute, a chest every ~35 s and two to three minutes from drop to spin.
+// 10 gold coins a minute, a chest won every ~35 s and one opened every one to two minutes.
 // ponytail: a fixed rotation, not a random draw - nothing to persist but the level. Upgrade path:
 // seeded picks per level if players say it feels repetitive.
 const ROTATION = [

@@ -288,7 +288,6 @@ const CHEST_PRIZES = {
 // a pile settle - are announced together, once.
 let chestNotice = { count: 0, timer: 0 };
 function noteChestDrop() {
-  trackMission({ type: 'chest' });
   chestNotice.count += 1;
   if (chestNotice.timer) return;
   chestNotice.timer = window.setTimeout(() => {
@@ -335,7 +334,12 @@ function flushPayout() {
   if (result.bonus > 0) thudHaptic();
   else tapHaptic();
 
-  for (let due = chestsDue(scoreBefore, state.score); due > 0; due -= 1) game?.dropChest(awardChestPrize);
+  // Counted when won, not when it lands: only chestsOnMachine ride at once, and the rest queue
+  // until one pays - which made a 'two chests' mission wait on the slow lower-bed crawl.
+  for (let due = chestsDue(scoreBefore, state.score); due > 0; due -= 1) {
+    game?.dropChest(awardChestPrize);
+    trackMission({ type: 'chest' });
+  }
 
   trackMission({
     type: 'payout',
