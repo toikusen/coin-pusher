@@ -33,6 +33,7 @@ import {
   chestDropZ,
   nudgeOverLip,
   onLowerBed,
+  LOWER_BLADE_SINK,
   lowerBladeZAt,
   settleChestOnLowerBed,
 } from './physics.js';
@@ -405,6 +406,9 @@ const FASCIA_TOP_Y = -0.65;
 // edge, but lit by the room rather than glowing on its own.
 const BRASS = Object.freeze({ roughness: 0.26, metalness: 0.92, envMapIntensity: 0.9 });
 const SETTLE_SOLVER_ITERATIONS = 4;
+const CLASSIC_EXPOSURE = 1.05;
+// Nearly shut, the machine dims to this share of its look's exposure.
+const CLOSED_EXPOSURE_SCALE = 0.33;
 
 export class CoinPusher {
   constructor(canvas, quality, callbacks = {}) {
@@ -463,6 +467,12 @@ export class CoinPusher {
     // Solver iterations are the one knob whose default is device-dependent, so it is seeded
     // from the quality profile rather than the shared defaults.
     this.tuning = { ...TUNING_DEFAULTS, solverIterations: quality.solverIterations };
+    // 'classic' is the procedural machine; 'winter' draws the delivered cabinet over the same
+    // physics (winterSkin.js), loaded the first time it is asked for.
+    this.skin = 'classic';
+    this.winter = null;
+    // What adaptQuality has stepped the render down to; a look may cap it further (resize).
+    this.pixelRatio = quality.pixelRatio;
   }
 
   async init() {
@@ -490,7 +500,7 @@ export class CoinPusher {
     // sat over an empty canvas.
     await this.renderer.compileAsync(this.scene, this.camera);
     this.syncCoinInstances();
-    if (this.composer) this.composer.render(); else this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
     this.timer = new THREE.Timer();
     this.timer.connect(document);
     return this;
@@ -511,7 +521,7 @@ export class CoinPusher {
     renderer.setPixelRatio(this.quality.pixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = CLASSIC_EXPOSURE;
     renderer.shadowMap.enabled = this.quality.shadows;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer = renderer;
@@ -2387,8 +2397,8 @@ export class CoinPusher {
     this.pusherDeckShape = pusherBody.colliders[0];
     const bladeBody = this.world.addKinematicBoxes([
       {
-        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: bladeHeight / 2, z: 0.07 },
-        offset: { x: 0, y: bladeHeight / 2, z: 0 },
+        halfExtents: { x: (BED_WIDTH - 0.3) / 2, y: (bladeHeight + LOWER_BLADE_SINK) / 2, z: 0.07 },
+        offset: { x: 0, y: (bladeHeight - LOWER_BLADE_SINK) / 2, z: 0 },
       },
     ], { x: 0, y: 0, z: lowerBladeZAt(this.world.stepNumber, this.quality.physicsStep) });
     // Targeted before each step from the analytic strokes, so neither ever drifts.
@@ -2714,13 +2724,8 @@ export class CoinPusher {
     const slow = adaptiveStepFor(this.slowFor ?? 0, frameDelta);
     this.slowFor = slow.slowFor;
     if (!slow.stepDown) return;
-    const ratio = this.renderer.getPixelRatio();
-    if (ratio > 1) {
-      const next = Math.max(1, ratio - 0.25);
-      this.renderer.setPixelRatio(next);
-      // The composer reads the ratio once, when it is built, and keeps its bloom buffers at that
-      // size - without this a phone stepped down to 1 still bloomed at 1.75, ~3x the pixels.
-      this.composer?.setPixelRatio(next);
+    if (this.pixelRatio > 1) {
+      this.pixelRatio = Math.max(1, this.pixelRatio - 0.25);
       this.resize?.();
       return;
     }
@@ -3011,6 +3016,13 @@ export class CoinPusher {
       if (!width || !height) return;
       this.camera.aspect = width / height;
       this.poseCamera();
+      const ratio = this.winter?.pixelRatio(this.pixelRatio, width, height) ?? this.pixelRatio;
+      if (this.renderer.getPixelRatio() !== ratio) {
+        this.renderer.setPixelRatio(ratio);
+        // The composer reads the ratio once, when it is built, and keeps its bloom buffers at that
+        // size - without this a phone stepped down to 1 still bloomed at 1.75, ~3x the pixels.
+        this.composer?.setPixelRatio(ratio);
+      }
       this.renderer.setSize(width, height, false);
       this.composer?.setSize(width, height);
     };
@@ -3163,7 +3175,8 @@ export class CoinPusher {
         part.material.emissiveIntensity = part.base * (0.2 + 0.8 * wave * wave);
       }
     }
-    const exposure = this.closed ? 0.35 : 1.05;
+    const lookExposure = this.winter?.active ? this.winter.exposure : CLASSIC_EXPOSURE;
+    const exposure = this.closed ? lookExposure * CLOSED_EXPOSURE_SCALE : lookExposure;
     if (this.renderer.toneMappingExposure !== exposure) {
       this.renderer.toneMappingExposure = THREE.MathUtils.damp(this.renderer.toneMappingExposure, exposure, 6, frameDelta);
       if (Math.abs(this.renderer.toneMappingExposure - exposure) < 0.01) this.renderer.toneMappingExposure = exposure;
@@ -3187,14 +3200,115 @@ export class CoinPusher {
     this.updateParticles(delta);
     this.pusherBody.lerpPose(this.world.alpha, this.pusherMesh.position);
     this.bladeBody.lerpPose(this.world.alpha, this.bladeMesh.position);
+    if (this.winter?.active) this.winter.update();
+    this.updateColliderDebug();
     const renderStart = performance.now();
-    if (this.composer) this.composer.render(); else this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
     this.lastRenderMs = performance.now() - renderStart;
   };
+
+  // The winter cabinet's look is baked and graded per material; bloom on top would glow its
+  // highlights twice, so it draws straight to the canvas.
+  renderFrame() {
+    if (this.composer && !this.winter?.active) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Switches the look: 'classic' or 'winter'. The winter cabinet loads on first use; the physics,
+   * the pile and every rule are the same under either.
+   */
+  async setSkin(name) {
+    if (name === 'winter' && !this.winter) {
+      // Its own chunk, with the EXR loader: players who never switch never download it.
+      this.winterLoading ??= import('./winterSkin.js')
+        .then(({ WinterSkin }) => WinterSkin.load(this))
+        .finally(() => { this.winterLoading = null; });
+      this.winter = await this.winterLoading;
+    }
+    this.winter?.setActive(name === 'winter');
+    this.skin = this.winter?.active ? 'winter' : 'classic';
+    this.resize?.();
+    // Compile now rather than stall the first frame; only what is visible is compiled.
+    await this.renderer.compileAsync(this.scene, this.camera);
+    return this.skin;
+  }
+
+  // What the winter look keeps on screen: everything drawn that its model does not replace.
+  skinKeepRoots() {
+    return [
+      ...Object.values(this.coinBatches ?? {}),
+      ...[...(this.chests ?? []), ...(this.chestPool ?? [])].map((chest) => chest.mesh),
+      this.particlePoints,
+      this.nextCoin,
+      this.nextCoinFlash,
+      this.colliderLines,
+      this.pinDebugLines,
+    ].filter(Boolean);
+  }
+
+  /**
+   * Draws every physics collider as lines over the scene, and the pin board's pins and bumpers -
+   * simulated in pachinko.js, not by the physics world - as circles in the board's plane. For
+   * checking a model against what the coins actually hit.
+   */
+  setColliderDebug(enabled) {
+    if (!enabled) {
+      for (const lines of [this.colliderLines, this.pinDebugLines]) {
+        if (!lines) continue;
+        lines.removeFromParent();
+        lines.geometry.dispose();
+        lines.material.dispose();
+      }
+      this.colliderLines = null;
+      this.pinDebugLines = null;
+      return;
+    }
+    if (this.colliderLines) return;
+    const material = () => new THREE.LineBasicMaterial({ color: 0xff3df2, depthTest: false, transparent: true, opacity: 0.85, fog: false });
+    this.colliderLines = new THREE.LineSegments(new THREE.BufferGeometry(), material());
+    this.colliderLines.frustumCulled = false;
+    this.colliderLines.renderOrder = 10;
+    this.scene.add(this.colliderLines);
+    const circles = [
+      ...this.pinBoard.pins.map(({ x, y }) => ({ x, y, radius: PIN_BOARD.pinRadius })),
+      ...PIN_BOARD.bumpers,
+    ];
+    const SEGMENTS = 16;
+    const points = new Float32Array(circles.length * SEGMENTS * 6);
+    circles.forEach(({ x, y, radius }, circle) => {
+      for (let segment = 0; segment < SEGMENTS; segment += 1) {
+        const offset = (circle * SEGMENTS + segment) * 6;
+        for (const [end, step] of [[0, segment], [3, segment + 1]]) {
+          const angle = (step / SEGMENTS) * Math.PI * 2;
+          points.set([x + radius * Math.cos(angle), y + radius * Math.sin(angle), GAME.dropZoneZ], offset + end);
+        }
+      }
+    });
+    const pinGeometry = new THREE.BufferGeometry();
+    pinGeometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
+    this.pinDebugLines = new THREE.LineSegments(pinGeometry, material());
+    this.pinDebugLines.material.color.set(0x3dfcff);
+    this.pinDebugLines.renderOrder = 10;
+    this.boardInner.add(this.pinDebugLines);
+    this.updateColliderDebug();
+  }
+
+  updateColliderDebug() {
+    if (!this.colliderLines) return;
+    const geometry = this.colliderLines.geometry;
+    geometry.setAttribute('position', new THREE.BufferAttribute(this.world.debugLines(), 3));
+    geometry.computeBoundingSphere();
+  }
 
   destroy() {
     this.stop();
     this.composer?.dispose();
+    // Before the scene walk below: the model's lightmap and reflection are not reachable from it
+    // once hidden materials are restored, and dispose() frees its PMREM target too.
+    this.winter?.dispose();
+    this.winter = null;
+    this.setColliderDebug(false);
     this.cleanup.splice(0).forEach((cleanup) => cleanup());
     for (const shot of this.launching) shot.coin.mesh.visible = false;
     this.launching.length = 0;

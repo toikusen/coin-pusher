@@ -69,6 +69,12 @@ function pickGeometry(geometry) {
 }
 
 const audio = new GameAudio(progress.soundEnabled);
+// ?skin=winter / ?skin=classic picks the look for this visit without touching the saved one;
+// ?colliders draws the physics colliders and pins over it.
+const skinParam = new URLSearchParams(location.search).get('skin');
+const SKINS = ['classic', 'winter'];
+if (!SKINS.includes(progress.skin)) progress.skin = 'classic';
+const showColliders = new URLSearchParams(location.search).has('colliders');
 
 const state = {
   ready: false,
@@ -94,6 +100,7 @@ function persist() {
   saveProgress({
     bestScore: state.bestScore,
     soundEnabled: audio.enabled,
+    skin: progress.skin,
     hasSeenOnboarding: progress.hasSeenOnboarding,
     hdriHorizontal: progress.hdriHorizontal,
     hdriVertical: progress.hdriVertical,
@@ -530,6 +537,13 @@ function bindUI() {
     persist();
     ui.announce(audio.enabled ? '音效已開啟' : '音效已關閉');
   });
+  elements.skinButton.addEventListener('click', () => {
+    if (!game) return;
+    const next = game.skin === 'winter' ? 'classic' : 'winter';
+    progress.skin = next;
+    persist();
+    applySkin(next);
+  });
   elements.helpButton.addEventListener('click', showOnboarding);
   elements.startButton.addEventListener('click', closeOnboarding);
   elements.resetButton.addEventListener('click', tapReset);
@@ -571,6 +585,20 @@ function bindUI() {
     else game.start();
   });
   window.addEventListener('beforeunload', () => game?.destroy(), { once: true });
+}
+
+// The winter cabinet is a few MB on first use, so the button stays busy until it is up. A failed
+// load leaves the classic machine running and says so; nothing else about the game changes.
+async function applySkin(skin) {
+  ui.setSkin(game.skin, { busy: true });
+  if (skin === 'winter' && !game.winter) ui.notice('載入冬季外觀…');
+  try {
+    await game.setSkin(skin);
+  } catch (error) {
+    console.error(error);
+    ui.notice('冬季外觀載入失敗');
+  }
+  ui.setSkin(game.skin);
 }
 
 async function boot() {
@@ -618,6 +646,7 @@ async function boot() {
     game.setEnvironmentRotation(progress.hdriHorizontal, progress.hdriVertical);
     ui.setHdriRotation(progress.hdriHorizontal, progress.hdriVertical);
     if (Object.keys(progress.tuning).length > 0) game.setPhysics(progress.tuning);
+    if (showColliders) game.setColliderDebug(true);
     ui.setTuning(game.tuning);
     ui.setGeometry(game.geometry);
     // Console handle for the bonus stage - see game/cheats.js for the query string equivalents.
@@ -627,6 +656,9 @@ async function boot() {
     CHEATS.spin = () => game?.spinSlot(awardChestPrize);
     if (import.meta.env.DEV) window.cheats = CHEATS;
     if (CHEATS.chest > 0) CHEATS.drop(CHEATS.chest);
+    ui.setSkin(game.skin);
+    const skin = SKINS.includes(skinParam) ? skinParam : progress.skin;
+    if (skin !== game.skin) await applySkin(skin);
     state.ready = true;
     ui.ready();
     renderState();

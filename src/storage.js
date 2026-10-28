@@ -7,6 +7,8 @@ const GEOMETRY_VERSION = 2;
 const defaults = Object.freeze({
   bestScore: 0,
   soundEnabled: true,
+  // Which look the machine wears: 'classic' or 'winter' (CoinPusher.setSkin).
+  skin: 'classic',
   hasSeenOnboarding: false,
   hdriHorizontal: 0,
   hdriVertical: 0,

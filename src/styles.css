@@ -637,6 +637,8 @@ html[data-fold] .mission__best { grid-area: best; }
 html[data-fold] .mission__value { grid-area: value; }
 html[data-fold] .mission__track { grid-area: track; }
 /* Armed reset: the ring turns warning red and says what the next tap does. */
+.hud-button[aria-pressed="true"] { border-color: var(--gold-200); color: var(--text-strong); }
+.hud-button:disabled { opacity: 0.5; cursor: progress; }
 .hud-button.is-armed { border-color: var(--danger-400); color: var(--danger-400); }
 .hud-button.is-armed::after {
   content: "再按一次";

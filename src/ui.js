@@ -43,7 +43,7 @@ export function collectUI() {
     'score', 'credits', 'bestScore', 'missionValue', 'missionBar', 'missionLabel',
     'gameCanvas', 'field', 'loading', 'loadError', 'errorMessage', 'retryButton',
     'reward', 'rewardAmount', 'rewardCombo', 'notice', 'dropButton', 'autoButton',
-    'soundButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
+    'soundButton', 'skinButton', 'helpButton', 'resetButton', 'onboarding', 'startButton', 'announcer',
     'tuneToggle', 'tunePanel', 'tuneClose', 'tunePhysicsReset', 'tuneGeometryReset',
     'hdriHorizontal', 'hdriHorizontalValue', 'hdriVertical', 'hdriVerticalValue', 'hdriReset',
     'cheatSlot', 'cheatOdds', 'cheatDrop', 'cheatSpin',
@@ -138,6 +138,16 @@ export class GameUI {
 
   setAuto(enabled) {
     this.el.autoButton.setAttribute('aria-pressed', String(enabled));
+  }
+
+  // Pressed = the winter cabinet is showing. Busy while it loads, so a second tap cannot race it.
+  setSkin(skin, { busy = false } = {}) {
+    const winter = skin === 'winter';
+    this.el.skinButton.setAttribute('aria-pressed', String(winter));
+    this.el.skinButton.setAttribute('aria-label', winter ? '切換經典外觀' : '切換冬季外觀');
+    this.el.skinButton.title = winter ? '切換經典外觀' : '切換冬季外觀';
+    this.el.skinButton.disabled = busy;
+    this.el.skinButton.setAttribute('aria-busy', String(busy));
   }
 
   setSound(enabled) {

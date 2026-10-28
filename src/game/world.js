@@ -241,6 +241,9 @@ export class PhysicsWorld {
     return this.#add(desc, RAPIER.ColliderDesc.cuboid(halfExtents.x, halfExtents.y, halfExtents.z).setMass(mass), { material, events: true });
   }
 
+  /** Every collider's outline as line-segment vertices (x, y, z per point), for a debug overlay. */
+  debugLines() { return this.world.debugRender().vertices; }
+
   setGravity(gravity) { this.world.gravity = gravity; }
   setIterations(iterations) { this.world.integrationParameters.numSolverIterations = iterations; }
 
