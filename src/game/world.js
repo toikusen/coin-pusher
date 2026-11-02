@@ -40,8 +40,12 @@ export function frictionFor(material, { groundFriction, coinFriction, pusherFric
   if (material === 'ground') return groundFriction / root;
   if (material === 'pusher') return pusherFriction / root;
   if (material === 'chest') return chestScale * root;
+  if (material === 'pearl') return PEARL_FRICTION;
   throw new Error(`unknown material ${material}`);
 }
+
+// Fixed, unlike the coin's: a pearl has no slider, and the rain's drop zones were measured with it.
+const PEARL_FRICTION = 0.6;
 
 const copy3 = (to, { x, y, z }) => { to.x = x; to.y = y; to.z = z; return to; };
 const copy4 = (to, { x, y, z, w }) => { to.x = x; to.y = y; to.z = z; to.w = w; return to; };
@@ -57,6 +61,11 @@ const copy4 = (to, { x, y, z, w }) => { to.x = x; to.y = y; to.z = z; to.w = w; 
 const CHEST_ONLY_BIT = 0x0002;
 const COIN_GROUPS = (((0xffff & ~CHEST_ONLY_BIT) << 16) | 0xffff) >>> 0;
 export const CHEST_ONLY_GROUPS = ((CHEST_ONLY_BIT << 16) | CHEST_ONLY_BIT) >>> 0;
+// The pearl sill stops round things only: a box cannot climb it, and a chest stuck behind it would
+// never pay. So the chest is the one body left out of the sill's group.
+const SILL_BIT = 0x0004;
+export const SILL_GROUPS = ((SILL_BIT << 16) | SILL_BIT) >>> 0;
+export const CHEST_GROUPS = (((0xffff & ~SILL_BIT) << 16) | 0xffff) >>> 0;
 
 export class PhysicsBody {
   constructor(world, rigidBody, collider, { material, role = null }) {
@@ -196,11 +205,11 @@ export class PhysicsWorld {
   }
 
   /** A kinematic body of several boxes, each `{ halfExtents, offset }` in body space. */
-  addKinematicBoxes(boxes, position, { material = 'pusher' } = {}) {
+  addKinematicBoxes(boxes, position, { material = 'pusher', groups } = {}) {
     const desc = RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(position.x, position.y, position.z);
     const [first, ...rest] = boxes;
     const shape = ({ halfExtents: h, offset: o }) => RAPIER.ColliderDesc.cuboid(h.x, h.y, h.z).setTranslation(o.x, o.y, o.z);
-    const body = this.#add(desc, shape(first), { material });
+    const body = this.#add(desc, shape(first), { material, groups });
     body.colliders = [body.collider];
     for (const box of rest) {
       const collider = this.world.createCollider(
@@ -227,18 +236,33 @@ export class PhysicsWorld {
     return body;
   }
 
+  /** A pearl: a ball with continuous collision, starting disabled. Coins' groups, so it misses chest-only walls. */
+  addPearl({ radius, mass, linearDamping, angularDamping }) {
+    const desc = RAPIER.RigidBodyDesc.dynamic()
+      .setLinearDamping(linearDamping)
+      .setAngularDamping(angularDamping)
+      .setCcdEnabled(true)
+      .setEnabled(false);
+    return this.#add(desc, RAPIER.ColliderDesc.ball(radius).setMass(mass), { material: 'pearl', groups: COIN_GROUPS });
+  }
+
+  /** Regrows a ball, for a pearl fusing into the next size. */
+  resizePearl(body, radius) {
+    body.collider.setRadius(radius);
+  }
+
   /** Swaps a coin's cylinder for one of a new thickness, keeping everything else. */
   resizeCoin(body, radius, thickness) {
     body.collider.setHalfHeight(thickness / 2);
     body.collider.setRadius(radius);
   }
 
-  addDynamicBox(halfExtents, { mass, linearDamping, angularDamping, material = 'chest' }) {
+  addDynamicBox(halfExtents, { mass, linearDamping, angularDamping, material = 'chest', groups }) {
     const desc = RAPIER.RigidBodyDesc.dynamic()
       .setLinearDamping(linearDamping)
       .setAngularDamping(angularDamping)
       .setEnabled(false);
-    return this.#add(desc, RAPIER.ColliderDesc.cuboid(halfExtents.x, halfExtents.y, halfExtents.z).setMass(mass), { material, events: true });
+    return this.#add(desc, RAPIER.ColliderDesc.cuboid(halfExtents.x, halfExtents.y, halfExtents.z).setMass(mass), { material, events: true, groups });
   }
 
   /** Every collider's outline as line-segment vertices (x, y, z per point), for a debug overlay. */

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import {
-  boardPins, boardReclineFor, closedFor, dropXAt, refillPose, FLAT_CAMERA, FOLD_CAMERA, OPEN_CAMERA, foldFor, fovForAspect, PIN_BOARD, pathAt,
+  boardPins, boardReclineFor, closedFor, dropXAt, refillPose, FLAT_CAMERA, FOLD_CAMERA, OPEN_CAMERA, flatShiftFor, foldFor, fovForAspect, PIN_BOARD, pathAt,
 } from '../src/game/CoinPusher.js';
 import { GAME } from '../src/game/config.js';
 
@@ -338,5 +338,16 @@ describe('reel locks', () => {
     expect(reelsLockedBetween(0.63, 0.7, locks)).toEqual([]);
     // A long frame across two locks reports both.
     expect(reelsLockedBetween(1, 2.5, locks)).toEqual([1, 2]);
+  });
+});
+
+describe('flatShiftFor', () => {
+  it('leaves a field at or above the framing aspect alone', () => {
+    expect(flatShiftFor(0.87, 1000)).toBeCloseTo(0);
+    expect(flatShiftFor(1.6, 1000)).toBeCloseTo(0);
+  });
+
+  it('moves a tall field\'s image down by half its slack', () => {
+    expect(flatShiftFor(0.435, 1000)).toBeCloseTo(-250);
   });
 });

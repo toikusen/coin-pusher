@@ -38,7 +38,7 @@ export function coinFallPhase(coin, position) {
 
 export function calculateReward(coins, previousCombo, elapsedSinceScore) {
   const base = coins.reduce(
-    (sum, coin) => sum + (coin.isPremium ? GAME.premiumValue : GAME.regularValue),
+    (sum, coin) => sum + (coin.value ?? (coin.isPremium ? GAME.premiumValue : GAME.regularValue)),
     0,
   );
   const carried = elapsedSinceScore < GAME.comboWindow ? previousCombo : 0;

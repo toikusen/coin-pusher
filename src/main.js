@@ -11,6 +11,8 @@ import { CHEATS } from './game/cheats.js';
 import { calculateReward, chestsDue } from './game/rules.js';
 import { loadMissionState, localDay, rewardText, step } from './game/missions.js';
 import { GameAudio } from './audio.js';
+import { mountAstralUI } from './astralUI.js';
+import { mountPearlLab } from './pearlLab.js';
 import { tapHaptic, thudHaptic, winHaptic } from './haptics.js';
 import { hasHinge, watchHinge } from './hinge.js';
 import { loadProgress, saveProgress } from './storage.js';
@@ -94,11 +96,13 @@ let missionPausedUntil = 0;
 ui.setMission(missions);
 
 let game = null;
+let astralUI = null;
 let autoTimer = 0;
 
 function persist() {
   saveProgress({
-    bestScore: state.bestScore,
+    bestScore: progress.bestScore,
+    starBest: progress.starBest,
     soundEnabled: audio.enabled,
     skin: progress.skin,
     hasSeenOnboarding: progress.hasSeenOnboarding,
@@ -112,6 +116,7 @@ function persist() {
 
 function renderState() {
   ui.update(state);
+  if (game?.pure) elements.credits.textContent = game.star.balls;
   ui.setAuto(state.auto);
   ui.setSound(audio.enabled);
 }
@@ -131,6 +136,11 @@ function attemptDrop({ quiet = false } = {}) {
   // rather than charging a coin or sounding the jammed-slot error.
   if (game.closed) return;
   audio.ensureContext();
+  // On the star machine a press is a ball, held or tapped; fire() keeps the pace.
+  if (game.pure) {
+    game.star.fire();
+    return;
+  }
   if (state.credits <= 0) {
     stopAuto();
     audio.error();
@@ -197,9 +207,13 @@ const PAYOUT_BATCH_MS = 140;
 let payout = null;
 
 function handleScore(coins, elapsed) {
+  if (game?.pure) {
+    payStars(coins);
+    return;
+  }
   // Snapshot what the reward depends on: coin objects are pooled and reused, so holding the
   // objects across the batch window would let a recycled coin change what it paid.
-  const dropped = coins.map((coin) => ({ isPremium: coin.isPremium }));
+  const dropped = coins.map((coin) => ({ isPremium: coin.isPremium, value: coin.value }));
   if (payout) {
     payout.coins.push(...dropped);
     payout.elapsed = elapsed;
@@ -220,7 +234,7 @@ function awardJackpot() {
   const reward = GAME.chestReward;
   state.score += reward;
   state.bestScore = Math.max(state.bestScore, state.score);
-  ui.reward({ total: reward, combo: state.combo, premium: true, bonus: 0, jackpot: '寶箱 777 JACKPOT' });
+  ui.reward({ total: reward, combo: state.combo, premium: true, bonus: 0, jackpot: 'CHEST 777 JACKPOT' });
   ui.announce(`寶箱 777！獲得 ${reward} 分`);
   audio.jackpot();
   winHaptic();
@@ -233,10 +247,12 @@ function awardJackpot() {
 
 // Money bags. Neither score nor credits: it rains real coins onto the tray, so the prize still has
 // to be pushed off and goes through the normal payout loop rather than around it.
+const pieceName = () => (game?.pure ? '星珠' : '硬幣');
+
 function awardCoinRain() {
   const coins = game?.rainCoins(GAME.coinRainCount) ?? 0;
-  ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `錢袋 BONUS ×${coins} 硬幣` });
-  ui.announce(`錢袋大獎！${coins} 枚硬幣從天而降`);
+  ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `SUPPLY BONUS ×${coins}` });
+  ui.announce(`大獎！${coins} 枚${pieceName()}落下`);
   audio.jackpot();
   audio.coinRain();
   winHaptic();
@@ -248,8 +264,8 @@ function awardQuake() {
   game?.shakeTable(GAME.quakeSeconds);
   // A banner, not the reward panel: the prize is not a number, and the coins it shakes over the
   // lip raise their own '+N' a second later. A '+0' popup on a jackpot reads as a bug.
-  ui.notice('地震大獎！');
-  ui.announce('地震大獎！檯面劇烈震動，硬幣被震落');
+  ui.notice('QUAKE BONUS!');
+  ui.announce(`地震大獎！檯面劇烈震動，${pieceName()}被震落`);
   audio.jackpot();
   winHaptic();
 }
@@ -267,8 +283,8 @@ function awardGild() {
   }
   // Same convention as the money bag: the popup counts coins, not points. The points arrive later,
   // as those coins are pushed off and pay premiumValue instead of regularValue.
-  ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `鍍金 BONUS ×${coins} 枚` });
-  ui.announce(`鍍金大獎！檯面上 ${coins} 枚硬幣變成 ${GAME.premiumValue} 分`);
+  ui.reward({ total: coins, combo: state.combo, premium: true, bonus: 0, jackpot: `GILD BONUS ×${coins}` });
+  ui.announce(`鍍金大獎！檯面上 ${coins} 枚${pieceName()}變成 ${GAME.premiumValue} 分`);
   audio.jackpot();
   winHaptic();
 }
@@ -286,6 +302,7 @@ const MISSION_REWARDS = {
 // the chest prize or payout popup that finished the mission. Payouts in the settle window after a
 // reward are the reward's own coins, so they do not count towards the next mission.
 function trackMission(event) {
+  if (game?.pure) return;
   if (event.type === 'payout' && performance.now() < missionPausedUntil) return;
   const result = step(missions, event, localDay());
   missions = result.state;
@@ -324,7 +341,7 @@ function noteChestDrop() {
   chestNotice.timer = window.setTimeout(() => {
     const { count } = chestNotice;
     chestNotice = { count: 0, timer: 0 };
-    ui.notice(count > 1 ? `寶箱出現 ×${count}！` : '寶箱出現！');
+    ui.notice(count > 1 ? `CHEST ×${count}!` : 'CHEST!');
     ui.announce(count > 1 ? `${count} 個寶箱掉進機台，把它推落就能轉拉霸` : '寶箱掉進機台，把它推落就能轉拉霸');
     audio.chestDrop();
     thudHaptic();
@@ -417,7 +434,10 @@ function resetSession() {
   state.credits = GAME.startingCredits;
   state.combo = 0;
   state.lastScoreAt = -Infinity;
+  astralUI?.hide();
   game?.resetPile();
+  if (game?.pure) game.star.newRound();
+  astralUI?.setMeter(0);
   ui.announce('遊戲已重新開始');
   renderState();
   elements.gameCanvas.focus();
@@ -591,14 +611,79 @@ function bindUI() {
 // load leaves the classic machine running and says so; nothing else about the game changes.
 async function applySkin(skin) {
   ui.setSkin(game.skin, { busy: true });
-  if (skin === 'winter' && !game.winter) ui.notice('載入冬季外觀…');
+  if (skin === 'winter' && !game.winter) ui.notice('LOADING WINTER…');
   try {
     await game.setSkin(skin);
   } catch (error) {
     console.error(error);
-    ui.notice('冬季外觀載入失敗');
+    ui.notice('WINTER FAILED TO LOAD');
   }
   ui.setSkin(game.skin);
+}
+
+// One number for a pearl off the lip: on the star machine that is the whole of scoring, so the
+// count on screen always matches what fell. No combo bonus, no missions, no chests.
+function payStars(coins) {
+  const total = coins.reduce((sum, { value }) => sum + (value ?? 1), 0);
+  state.score += total;
+  ui.reward({ total, combo: 0, premium: total > 1, bonus: 0 });
+  audio.payout(total > 1);
+  tapHaptic();
+  renderState();
+}
+
+// On the machine the names are stamped in English; the screen reader keeps speaking Chinese.
+const CORE_NAMES = ['', '藍色星核', '紫色星核', '金色星核'];
+const CORE_PLATES = ['', 'BLUE CORE', 'VIOLET CORE', 'GOLD CORE'];
+
+// Two like cores met on the bed and became the next one up: the alchemy.
+function noteFusion(level) {
+  ui.notice(`${CORE_PLATES[level]} FORGED!`);
+  ui.announce(`${CORE_NAMES[level]}鍊成`);
+  audio.jackpot();
+  winHaptic();
+}
+
+function noteStar(event) {
+  if (event.type === 'slot') {
+    const { slot } = event;
+    if (slot.pearls) ui.reward({ total: slot.pearls, combo: 0, premium: false, bonus: 0, jackpot: 'PEARLS' });
+    if (slot.core) ui.notice('CORE DROP!');
+    astralUI.setMeter(game.star.meter);
+    thudHaptic();
+  } else if (event.type === 'rain') {
+    ui.notice(`STAR RAIN ×${event.count}`);
+    ui.announce(`星雨時間，${event.count} 顆星珠落下`);
+    astralUI.setMeter(game.star.meter);
+    audio.jackpot();
+    audio.coinRain();
+    winHaptic();
+  } else if (event.type === 'core') {
+    if (event.level > 1) ui.notice(`${CORE_PLATES[event.level]} DROP!`);
+    astralUI.setMeter(game.star.meter);
+    thudHaptic();
+  } else if (event.type === 'fired') {
+    audio.drop();
+    tapHaptic();
+  } else if (event.type === 'over') {
+    progress.starBest = Math.max(progress.starBest, state.score);
+    persist();
+    astralUI.show(`SCORE ${state.score}`, `BEST ${progress.starBest}`, () => resetSession());
+    audio.jackpot();
+    winHaptic();
+  }
+  renderState();
+}
+
+// A burst of pearls can leave in the same frame: one click and tick per this long, not one each.
+const PEARL_SOUND_MS = 90;
+let pearlSoundAt = 0;
+function notePearlOut() {
+  const now = performance.now();
+  if (now - pearlSoundAt < PEARL_SOUND_MS) return;
+  pearlSoundAt = now;
+  audio.payout(true);
+  tapHaptic();
 }
 
 async function boot() {
@@ -616,6 +701,10 @@ async function boot() {
       },
       onReelTick: () => audio.reelTick(),
       onChestDrop: noteChestDrop,
+      onPearlOut: notePearlOut,
+      onPearlRain: () => { audio.jackpot(); audio.coinRain(); winHaptic(); },
+      onStar: noteStar,
+      onPearlFusion: noteFusion,
       onError: (message) => ui.error(message),
     }).init();
     if (hingeParam !== null) game.setHingeAngle(Number(hingeParam));
@@ -656,6 +745,15 @@ async function boot() {
     CHEATS.spin = () => game?.spinSlot(awardChestPrize);
     if (import.meta.env.DEV) window.cheats = CHEATS;
     if (CHEATS.chest > 0) CHEATS.drop(CHEATS.chest);
+    mountPearlLab(game, () => {
+      state.score = 0;
+      astralUI?.hide();
+      if (game.pure) game.star.newRound();
+      astralUI?.setMeter(0);
+      renderState();
+    });
+    astralUI = mountAstralUI(game, () => ui.setMission(missions));
+    ui.setMission(missions);
     ui.setSkin(game.skin);
     const skin = SKINS.includes(skinParam) ? skinParam : progress.skin;
     if (skin !== game.skin) await applySkin(skin);

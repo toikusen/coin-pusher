@@ -23,6 +23,22 @@ const KIND_TEXT = {
   open: '開寶箱',
 };
 
+// The star machine's words for the same counters: a chest there is a seeded star core, and opening
+// one is pushing a core over the lip.
+const STAR_TEXT = {
+  ...KIND_TEXT,
+  drop: '製造星珠',
+  premium: '推落金星珠',
+  chest: '獲得星核',
+  open: '推落星核',
+};
+let kindText = KIND_TEXT;
+
+/** Picks whose words the HUD uses. */
+export function useStarWords(on) {
+  kindText = on ? STAR_TEXT : KIND_TEXT;
+}
+
 // The first three teach the loop: short, and each one a different kind. The first is about the
 // button, not the pile - a fresh machine pays nothing for about a minute while it fills.
 const INTRO = [
@@ -61,12 +77,12 @@ export function missionAt(level) {
 
 /** HUD text for a mission and its progress, e.g. '推落金幣 3 / 5'. */
 export function missionText(mission, progress) {
-  return `${KIND_TEXT[mission.kind]} ${Math.min(progress, mission.target)} / ${mission.target}`;
+  return `${kindText[mission.kind]} ${Math.min(progress, mission.target)} / ${mission.target}`;
 }
 
 /** Reward text for the completion notice, e.g. '硬幣雨 ×8'. */
 export function rewardText(reward) {
-  if (reward.type === 'rain') return `硬幣雨 ×${reward.amount}`;
+  if (reward.type === 'rain') return `${kindText === STAR_TEXT ? '星珠補給' : '硬幣雨'} ×${reward.amount}`;
   if (reward.type === 'quake') return '地震';
   return '鍍金';
 }

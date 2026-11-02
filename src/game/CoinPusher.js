@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { clearPinsAround, pinLayout, simulateDrop } from './pachinko.js';
-import { CHEST_ONLY_GROUPS, initPhysics, physicsBuild, PhysicsWorld } from './world.js';
+import { PearlRain } from './pearlRain.js';
+import { StarDrop } from './starDrop.js';
+import { pearlStrokeZ, PURE_PEARLS_DEFAULT, seededRandom, straightRun } from './pearls.js';
+import { CHEST_GROUPS, CHEST_ONLY_GROUPS, initPhysics, physicsBuild, PhysicsWorld } from './world.js';
 import { boardThemeFor } from './themes/index.js';
 import { drawReelStrip, REEL_IMAGE_FILES, trimmedArt } from './themes/nocturneReels.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
@@ -373,6 +376,14 @@ export function fovForAspect(aspect) {
   const halfHeight = Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV / 2)) * (FRAME_ASPECT / aspect);
   return THREE.MathUtils.radToDeg(2 * Math.atan(halfHeight));
 }
+/**
+ * The view offset that seats a tall field's machine on the deck below it. fovForAspect() opens the
+ * frame evenly above and below, so the slack is halved: taking it all from the bottom keeps the lip
+ * against the deck, and the HUD stickers get the empty hall above the board.
+ */
+export function flatShiftFor(aspect, height) {
+  return -height * Math.max(0, 1 - aspect / FRAME_ASPECT) / 2;
+}
 // World units per tile of public/textures/deck_plate.jpg. The tile is two plates across, so a
 // plate is two units - about three coin diameters.
 const DECK_PLATE_TILE = 4;
@@ -419,6 +430,8 @@ export class CoinPusher {
     this.running = false;
     this.activeCoins = [];
     this.coinPool = [];
+    // Pearls in place of coins: dropped, seeded, paid and shaken - see pearlRain.js.
+    this.pure = PURE_PEARLS_DEFAULT;
     this.createdCoins = 0;
     // Paid coins go as they touch the tray: left to gather there for seconds, they read as coins
     // dropped on the floor that blink out later.
@@ -493,8 +506,11 @@ export class CoinPusher {
     for (const part of [this.slotMesh, this.reelPanel]) if (part) this.boardInner.attach(part);
     await this.setupBloom();
     this.setupParticles();
+    this.pearls = new PearlRain(this);
+    this.star = new StarDrop(this);
     this.bindResize();
     await this.resetPile();
+    if (this.pure) this.star.setActive(true);
     // Compile every shader and draw one frame behind the onboarding dialog. Left to the first
     // animate(), shader compilation stalled the tap on 開始挑戰 on an iPhone 13, and the dialog
     // sat over an empty canvas.
@@ -683,6 +699,7 @@ export class CoinPusher {
     const scaleY = (this.tuning.thickness / COIN_HEIGHT) * COIN_DRAW_THICKEN;
     // In-flight coins too: resetPile returns them to the pool, and an untuned one would be reused.
     for (const coin of [...this.activeCoins, ...this.coinPool, ...this.launching.map((shot) => shot.coin)]) {
+      if (coin.isPearl) continue;
       applyCoinTuning(coin.body, this.tuning, resizeShape);
       coin.mesh.scale.y = scaleY;
     }
@@ -1699,6 +1716,7 @@ export class CoinPusher {
       mass: GAME.chestMass,
       linearDamping: GAME.chestLinearDamping,
       angularDamping: GAME.chestAngularDamping,
+      groups: CHEST_GROUPS,
     });
     const chest = { body, mesh, drop: null };
     // Touchdown is whatever it hits first - the tray, or the coins already on it. It is dust
@@ -1731,6 +1749,8 @@ export class CoinPusher {
   // when the reels have spun after it has fully dropped - three of a kind pays, a miss does not. A chest still on the machine has paid
   // nothing yet.
   dropChest(onWin) {
+    // No chests on the star machine.
+    if (this.pure) return false;
     if (!this.chestPrototype) return false;
     // Won while a pile is settling: it would ride the remaining settle steps at many times game
     // speed. Held until settlePile() finishes, which drops it then.
@@ -1793,6 +1813,11 @@ export class CoinPusher {
   // Money-bag payout: coins burst from the top of the pin board and rain down through it. Returns how many were scheduled, which is
   // what the HUD announces - a rain arriving on top of one still running just adds to the queue.
   rainCoins(count = GAME.coinRainCount) {
+    // Straight into the store on the star machine: down the board, a rain buries the hero ball.
+    if (this.pure) {
+      this.pearls.mintMany(count);
+      return count;
+    }
     this.coinRain = { remaining: (this.coinRain?.remaining ?? 0) + count, timer: 0 };
     return count;
   }
@@ -1822,7 +1847,7 @@ export class CoinPusher {
   // Gild payout: turns the coins gildTargets picked. Returns how many changed, which is what the
   // HUD announces and, on an empty machine, is legitimately zero.
   gildCoins(ratio = GAME.gildRatio) {
-    const gilded = gildTargets(this.activeCoins, ratio);
+    const gilded = gildTargets(this.pure ? this.pearls.active : this.activeCoins, ratio);
     for (const coin of gilded) {
       coin.isPremium = true;
       coin.mesh.material = this.coinMaterials.premium;
@@ -1841,7 +1866,7 @@ export class CoinPusher {
     const quake = this.quake;
     if (!quake) return;
     quake.remaining -= delta;
-    for (const coin of this.activeCoins) {
+    for (const coin of this.pure ? this.pearls.active : this.activeCoins) {
       // A counted coin is already down the chute; shaking it only fights its recycle.
       if (coin.counted) continue;
       const kick = quakeKick();
@@ -2403,9 +2428,12 @@ export class CoinPusher {
     ], { x: 0, y: 0, z: lowerBladeZAt(this.world.stepNumber, this.quality.physicsStep) });
     // Targeted before each step from the analytic strokes, so neither ever drifts.
     this.world.beforeStep.push((stepNumber) => {
-      const { positionZ } = pusherMotionAt(stepNumber, this.quality.physicsStep);
+      const positionZ = this.pearls?.stepTray(stepNumber) ?? pusherMotionAt(stepNumber, this.quality.physicsStep).positionZ;
       pusherBody.rb.setNextKinematicTranslation({ x: 0, y: 0, z: positionZ });
-      bladeBody.rb.setNextKinematicTranslation({ x: 0, y: 0, z: lowerBladeZAt(stepNumber, this.quality.physicsStep) });
+      const bladeZ = this.pure
+        ? pearlStrokeZ(stepNumber, this.quality.physicsStep).bladeZ
+        : lowerBladeZAt(stepNumber, this.quality.physicsStep);
+      bladeBody.rb.setNextKinematicTranslation({ x: 0, y: 0, z: bladeZ });
     });
 
     this.pusherMesh = pusherMesh;
@@ -2505,10 +2533,10 @@ export class CoinPusher {
     const coin = this.nextCoin;
     if (!coin) return;
     const { visible, lift, scale, flash } = refillPose(this.elapsed - this.droppedAt);
-    coin.visible = visible;
+    coin.visible = visible && !this.pure;
     coin.position.y = DROP_START_Y - DROPPER_Y + lift;
     coin.scale.setScalar(scale);
-    this.nextCoinFlash.material.opacity = flash;
+    this.nextCoinFlash.material.opacity = this.pure ? 0 : flash;
   }
 
   launchCoin() {
@@ -2527,9 +2555,14 @@ export class CoinPusher {
     return true;
   }
 
+  /** A hero-blue ball down the pin board, handed to `onLand` with its exit x instead of to physics. */
+  dropStarBall(onLand) {
+    return this.sendDownBoard({ x: dropXAt(this.elapsed), y: DROP_START_Y }, false, onLand);
+  }
+
   // Puts a coin on the pin board. start is simulateDrop's, so it may carry a launch velocity.
-  sendDownBoard(start, premium) {
-    const coin = this.acquireCoin();
+  sendDownBoard(start, premium, onLand = null) {
+    const coin = this.pure ? this.pearls.acquire() : this.acquireCoin();
     if (!coin) return false;
     coin.isPremium = premium;
     coin.mesh.material = this.coinMaterials[coin.isPremium ? 'premium' : 'regular'];
@@ -2542,7 +2575,7 @@ export class CoinPusher {
     coin.mesh.position.copy(this.boardToWorld(start.x, start.y));
     coin.mesh.quaternion.copy(this.boardRig.quaternion).multiply(COIN_UPRIGHT);
     coin.mesh.visible = true;
-    this.launching.push({ coin, path, hits, hitIndex: 0, elapsed: 0 });
+    this.launching.push({ coin, path, hits, hitIndex: 0, elapsed: 0, onLand });
     return true;
   }
 
@@ -2570,6 +2603,7 @@ export class CoinPusher {
       if (shot.elapsed < last.t) continue;
 
       this.launching.splice(index, 1);
+      shot.onLand?.(last.x);
       const before = path[Math.max(0, path.length - 2)];
       const step = Math.max(last.t - before.t, 1e-6);
       const q = shot.coin.mesh.quaternion;
@@ -2589,6 +2623,7 @@ export class CoinPusher {
         ).applyQuaternion(this.boardRig.quaternion)),
         orientation: q,
       });
+      if (shot.onLand) shot.coin.cross = straightRun(last.x);
     }
   }
 
@@ -2601,6 +2636,7 @@ export class CoinPusher {
       this.bumpers[index].glow = 1;
       const spark = this.boardToWorld(x, y, GAME.dropZoneZ - 0.3);
       this.emitParticles(spark.x, spark.y, spark.z, 8, premium);
+      this.pearls.bumperHit(index);
     }
     this.callbacks.onBoardHit?.(kind, strength);
   }
@@ -2643,7 +2679,8 @@ export class CoinPusher {
     coin.body.setPose(position, orientation);
     coin.body.setVelocity(velocity);
     coin.body.setAngularVelocity(angularVelocity);
-    this.activeCoins.push(coin);
+    if (coin.isPearl) this.pearls.adopt(coin);
+    else this.activeCoins.push(coin);
   }
 
   setupParticles() {
@@ -2766,7 +2803,7 @@ export class CoinPusher {
     };
     // A pile still settling is mid-collapse from its seed lattice - not something to show.
     if (!this.settling) for (const coin of this.activeCoins) draw(coin);
-    for (const shot of this.launching) draw(shot.coin);
+    for (const shot of this.launching) if (!shot.coin.isPearl) draw(shot.coin);
     for (const [name, batch] of Object.entries(this.coinBatches)) {
       batch.count = counts[name];
       batch.instanceMatrix.needsUpdate = true;
@@ -2862,6 +2899,28 @@ export class CoinPusher {
     return true;
   }
 
+  // A pearl went over the lip: sparks at the slot's mouth, as for a coin. On the pearl machine it
+  // pays like one too; on the coin machine it is only a lab rain, and pays nothing.
+  pearlOut(pearl) {
+    this.emitParticles(pearl.body.position.x, FASCIA_TOP_Y, chuteZ() + 1.1 - FASCIA_GAP, pearl.isPremium ? 12 : 7, true);
+    if (!this.pure) {
+      this.callbacks.onPearlOut?.();
+      return;
+    }
+    this.callbacks.onScore?.([pearl], this.elapsed);
+    if (pearl.level > 0) this.star.coreOut(pearl.level);
+  }
+
+  /** Swaps the machine between pearls and coins, on a fresh pile: nothing carries across. */
+  setPure(pure, seed = null) {
+    this.pure = pure;
+    this.pearls.setSill(pure);
+    this.star.setActive(false);
+    const settled = this.resetPile(seed);
+    if (pure) this.star.setActive(true);
+    return settled;
+  }
+
   /** Settling a new pile, physics behind real time, or a full machine - auto-drop waits (main.js). */
   get busy() {
     return Boolean(this.settling || this.behind);
@@ -2927,20 +2986,31 @@ export class CoinPusher {
     this.coinPool.push(coin);
   }
 
-  resetPile() {
+  // With a seed, the pile is rebuilt from the same numbers: the pearl lab's repeatable start. Coin
+  // pose and colour draw on Math.random deep in spawnCoin, hence the swap for this one loop.
+  resetPile(seed = null) {
     this.cancelChest();
+    this.pearls?.clear(seed);
     for (const shot of this.launching) {
       shot.coin.mesh.visible = false;
-      this.coinPool.push(shot.coin);
+      // Pearls in flight went back to their own pool with pearls.clear above.
+      if (!shot.coin.isPearl) this.coinPool.push(shot.coin);
     }
     this.launching.length = 0;
     for (let index = this.activeCoins.length - 1; index >= 0; index -= 1) this.recycleCoin(index);
     this.runPusherToFullRetreat();
-    const pileSeed = Math.floor(Math.random() * 1_000_000_000);
+    if (this.pure) {
+      this.pearls.seed();
+      return this.settlePile();
+    }
+    const pileSeed = seed ?? Math.floor(Math.random() * 1_000_000_000);
+    const worldRandom = Math.random;
+    if (seed !== null) Math.random = seededRandom(seed);
     for (let index = 0; index < this.quality.seedCount; index += 1) {
       const position = seedPosition(index, pileSeed, this.tuning.thickness, this.pusherBody.position.z);
       this.spawnCoin(position.x, position.y, position.z, position.tier);
     }
+    Math.random = worldRandom;
     return this.settlePile();
   }
 
@@ -2997,6 +3067,7 @@ export class CoinPusher {
       coin.mesh.position.copy(coin.body.position);
       coin.mesh.quaternion.copy(coin.body.quaternion);
     }
+    this.pearls.settled();
     this.settling = false;
     for (const onWin of this.pendingChests.splice(0)) this.dropChest(onWin);
   }
@@ -3083,7 +3154,11 @@ export class CoinPusher {
     const height = this.canvas.clientHeight;
     const top = this.canvas.getBoundingClientRect().top;
     const sillNdc = new THREE.Vector3(0, SILL_HEIGHT, GAME.dropZoneZ - 0.1).project(this.camera).y;
-    const shift = this.foldable && height ? foldShiftFor(window.innerHeight / 2 - top, height, sillNdc) : 0;
+    const shift = !height
+      ? 0
+      : this.foldable
+        ? foldShiftFor(window.innerHeight / 2 - top, height, sillNdc)
+        : flatShiftFor(this.camera.aspect, height);
     if (Math.abs(shift) >= 0.5) {
       this.camera.setViewOffset(width, height, 0, shift, width, height);
       this.camera.updateProjectionMatrix();
@@ -3162,7 +3237,10 @@ export class CoinPusher {
         this.recycleCoin(index);
       }
     }
-    if (scored.length > 0) this.callbacks.onScore?.(scored, this.elapsed);
+    if (scored.length > 0) {
+      this.callbacks.onScore?.(scored, this.elapsed);
+      this.pearls.noteCoins(scored.length);
+    }
 
     if (!this.quality.reducedMotion) {
       const pulse = 0.75 + 0.2 * Math.sin(this.elapsed * 3);
@@ -3194,7 +3272,13 @@ export class CoinPusher {
       this.poseCamera();
     }
     // Chests and coin rain wait out a settling pile (dropChest queues; rain resumes after).
-    if (!this.settling) this.updateBonus(delta);
+    if (!this.settling) {
+      this.updateBonus(delta);
+      this.pearls.update(delta);
+      this.star.update(delta);
+    }
+    // A pile still settling is not something to show, the same as for coins.
+    this.pearls.mesh.visible = !this.settling;
     this.updateHits(delta);
     this.syncCoinInstances();
     this.updateParticles(delta);
@@ -3239,6 +3323,8 @@ export class CoinPusher {
     return [
       ...Object.values(this.coinBatches ?? {}),
       ...[...(this.chests ?? []), ...(this.chestPool ?? [])].map((chest) => chest.mesh),
+      ...(this.pearls?.drawn ?? []),
+      ...(this.star?.drawn ?? []),
       this.particlePoints,
       this.nextCoin,
       this.nextCoinFlash,
@@ -3313,6 +3399,7 @@ export class CoinPusher {
     for (const shot of this.launching) shot.coin.mesh.visible = false;
     this.launching.length = 0;
     for (let index = this.activeCoins.length - 1; index >= 0; index -= 1) this.recycleCoin(index);
+    this.pearls?.dispose();
     // Last: everything above still talks to the bodies, and a freed world's bodies are dangling.
     this.world?.free();
     // The scene walk below frees geometry and materials, not an instanced mesh's own buffers.
